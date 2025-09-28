@@ -43,6 +43,10 @@ cfg_select! {
         mod wasi;
         use wasi as imp;
     }
+    target_os = "edos" => {
+        mod edos;
+        use edos as imp;
+    }
     _ => {
         mod unsupported;
         use unsupported as imp;

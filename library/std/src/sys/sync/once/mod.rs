@@ -18,6 +18,7 @@ cfg_select! {
         target_os = "dragonfly",
         target_os = "fuchsia",
         target_os = "hermit",
+        target_os = "edos",
     ) => {
         mod futex;
         pub use futex::{Once, OnceState};

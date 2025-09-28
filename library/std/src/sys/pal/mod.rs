@@ -49,6 +49,10 @@ cfg_select! {
         mod vexos;
         pub use self::vexos::*;
     }
+    target_os = "edos" => {
+        mod edos;
+        pub use self::edos::*;
+    }
     all(target_os = "wasi", target_env = "p2") => {
         mod wasip2;
         pub use self::wasip2::*;
