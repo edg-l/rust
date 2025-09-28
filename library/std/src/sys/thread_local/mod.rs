@@ -30,6 +30,7 @@ cfg_select! {
         target_os = "zkvm",
         target_os = "trusty",
         target_os = "vexos",
+        target_os = "edos",
     ) => {
         mod no_threads;
         pub use no_threads::{EagerStorage, LazyStorage, thread_local_inner};
@@ -100,6 +101,7 @@ pub(crate) mod guard {
             target_os = "zkvm",
             target_os = "trusty",
             target_os = "vexos",
+            target_os = "edos",
         ) => {
             pub(crate) fn enable() {
                 // FIXME: Right now there is no concept of "thread exit" on
