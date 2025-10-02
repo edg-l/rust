@@ -89,6 +89,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "edos_rt"
+version = "0.0.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "61cac134c5d41914da37c3a4da79006f8c8e506937872fe5487dd8a605d75413"
+dependencies = [
+ "rustc-std-workspace-alloc",
+ "rustc-std-workspace-core",
+]
+
+[[package]]
 name = "fortanix-sgx-abi"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -311,6 +321,7 @@ dependencies = [
  "cfg-if",
  "core",
  "dlmalloc",
+ "edos_rt",
  "fortanix-sgx-abi",
  "hashbrown",
  "hermit-abi",
