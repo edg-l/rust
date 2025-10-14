@@ -49,6 +49,10 @@ cfg_select! {
         mod zkvm;
         pub use zkvm::*;
     }
+     target_os = "edos" => {
+        mod edos;
+        pub use edos::*;
+    }
     _ => {
         mod unsupported;
         pub use unsupported::*;

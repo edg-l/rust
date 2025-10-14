@@ -9,6 +9,10 @@ cfg_select! {
         mod windows;
         pub use windows::{AnonPipe, pipe};
     }
+    target_os = "edos" => {
+        mod unix;
+        pub use unix::{AnonPipe, pipe};
+    }
     _ => {
         mod unsupported;
         pub use unsupported::{AnonPipe, pipe};

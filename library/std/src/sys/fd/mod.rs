@@ -11,6 +11,11 @@ cfg_select! {
         mod hermit;
         pub use hermit::*;
     }
+     target_os = "edos" => {
+        mod edos;
+        #[allow(unused)]
+        pub use edos::*;
+    }
     all(target_vendor = "fortanix", target_env = "sgx") => {
         mod sgx;
         pub use sgx::*;

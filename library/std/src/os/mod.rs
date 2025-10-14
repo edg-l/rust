@@ -129,6 +129,8 @@ pub mod android;
 pub mod cygwin;
 #[cfg(target_os = "dragonfly")]
 pub mod dragonfly;
+#[cfg(target_os = "edos")]
+pub mod edos;
 #[cfg(target_os = "emscripten")]
 pub mod emscripten;
 #[cfg(target_os = "espidf")]

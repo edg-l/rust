@@ -7,9 +7,11 @@
 
 pub use super::common::Args;
 use crate::ffi::CStr;
+#[cfg(target_os = "edos")]
+use crate::os::edos::ffi::OsStringExt;
 #[cfg(target_os = "hermit")]
 use crate::os::hermit::ffi::OsStringExt;
-#[cfg(not(target_os = "hermit"))]
+#[cfg(not(any(target_os = "hermit", target_os = "edos",)))]
 use crate::os::unix::ffi::OsStringExt;
 
 /// One-time global initialization.
@@ -84,6 +86,7 @@ pub fn args() -> Args {
     target_os = "hurd",
     target_os = "rtems",
     target_os = "nuttx",
+    target_os = "edos",
 ))]
 mod imp {
     use crate::ffi::c_char;
