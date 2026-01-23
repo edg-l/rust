@@ -85,7 +85,10 @@ where
                 }
             }
         },
-        BackendRepr::SimdVector { .. } => return Err(CannotUseFpConv),
+        BackendRepr::SimdVector { .. } => {
+            return Err(CannotUseFpConv);
+        }
+        BackendRepr::ScalableVector { .. } => panic!("scalable vectors are unsupported"),
         BackendRepr::ScalarPair(..) | BackendRepr::Memory { .. } => match arg_layout.fields {
             FieldsShape::Primitive => {
                 unreachable!("aggregates can't have `FieldsShape::Primitive`")
@@ -285,6 +288,11 @@ fn classify_arg<'a, Ty, C>(
 {
     if !arg.layout.is_sized() {
         // Not touching this...
+        return;
+    }
+    if arg.layout.pass_indirectly_in_non_rustic_abis(cx) {
+        arg.make_indirect();
+        *avail_gprs = (*avail_gprs).saturating_sub(1);
         return;
     }
     if !is_vararg {

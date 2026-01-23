@@ -27,7 +27,6 @@ LL |     cfg!(target_feature = "_UNEXPECTED_VALUE");
 `amx-movrs`
 `amx-tf32`
 `amx-tile`
-`amx-transpose`
 `apxf`
 `atomics`
 `avx`
@@ -122,6 +121,7 @@ LL |     cfg!(target_feature = "_UNEXPECTED_VALUE");
 `frecipe`
 `frintts`
 `fxsr`
+`gc`
 `gfni`
 `guarded-storage`
 `hard-float`
@@ -424,6 +424,7 @@ LL |     cfg!(target_feature = "_UNEXPECTED_VALUE");
 `zkn`
 `zknd`
 `zkne`
+`zkne_or_zknd`
 `zknh`
 `zkr`
 `zks`

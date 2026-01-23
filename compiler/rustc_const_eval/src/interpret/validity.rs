@@ -639,12 +639,6 @@ impl<'rt, 'tcx, M: Machine<'tcx>> ValidityVisitor<'rt, 'tcx, M> {
                             // This can actually occur with transmutes.
                             throw_validation_failure!(self.path, MutableRefToImmutable);
                         }
-                        // In a const, any kind of mutable reference is not good.
-                        if matches!(self.ctfe_mode, Some(CtfeValidationMode::Const { .. })) {
-                            if ptr_expected_mutbl == Mutability::Mut {
-                                throw_validation_failure!(self.path, MutableRefInConst);
-                            }
-                        }
                     }
                 }
                 // Potentially skip recursive check.
@@ -1261,9 +1255,10 @@ impl<'rt, 'tcx, M: Machine<'tcx>> ValueVisitor<'tcx, M> for ValidityVisitor<'rt,
                 // When you extend this match, make sure to also add tests to
                 // tests/ui/type/pattern_types/validity.rs((
                 match **pat {
-                    // Range patterns are precisely reflected into `valid_range` and thus
+                    // Range and non-null patterns are precisely reflected into `valid_range` and thus
                     // handled fully by `visit_scalar` (called below).
                     ty::PatternKind::Range { .. } => {},
+                    ty::PatternKind::NotNull => {},
 
                     // FIXME(pattern_types): check that the value is covered by one of the variants.
                     // For now, we rely on layout computation setting the scalar's `valid_range` to
@@ -1320,7 +1315,7 @@ impl<'rt, 'tcx, M: Machine<'tcx>> ValueVisitor<'tcx, M> for ValidityVisitor<'rt,
                     self.visit_scalar(b, b_layout)?;
                 }
             }
-            BackendRepr::SimdVector { .. } => {
+            BackendRepr::SimdVector { .. } | BackendRepr::ScalableVector { .. } => {
                 // No checks here, we assume layout computation gets this right.
                 // (This is harder to check since Miri does not represent these as `Immediate`. We
                 // also cannot use field projections since this might be a newtype around a vector.)

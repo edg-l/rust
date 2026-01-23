@@ -10,13 +10,14 @@ use rustc_hir::def_id::LocalDefId;
 use rustc_hir::intravisit::{InferKind, Visitor, VisitorExt, walk_ty};
 use rustc_hir::{
     self as hir, AmbigArg, Expr, ExprKind, FnRetTy, FnSig, GenericArgsParentheses, GenericParamKind, HirId, Impl,
-    ImplItemKind, Item, ItemKind, Pat, PatExpr, PatExprKind, PatKind, Path, QPath, Ty, TyKind,
+    ImplItemImplKind, ImplItemKind, Item, ItemKind, Node, Pat, PatExpr, PatExprKind, PatKind, Path, QPath, Ty, TyKind,
 };
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_middle::ty::Ty as MiddleTy;
 use rustc_session::impl_lint_pass;
 use rustc_span::Span;
 use std::iter;
+use std::ops::ControlFlow;
 
 declare_clippy_lint! {
     /// ### What it does
@@ -58,6 +59,7 @@ declare_clippy_lint! {
 pub struct UseSelf {
     msrv: Msrv,
     stack: Vec<StackItem>,
+    recursive_self_in_type_definitions: bool,
 }
 
 impl UseSelf {
@@ -65,6 +67,7 @@ impl UseSelf {
         Self {
             msrv: conf.msrv,
             stack: Vec::new(),
+            recursive_self_in_type_definitions: conf.recursive_self_in_type_definitions,
         }
     }
 }
@@ -84,10 +87,10 @@ const SEGMENTS_MSG: &str = "segments should be composed of at least 1 element";
 
 impl<'tcx> LateLintPass<'tcx> for UseSelf {
     fn check_item(&mut self, cx: &LateContext<'tcx>, item: &Item<'tcx>) {
-        // We push the self types of `impl`s on a stack here. Only the top type on the stack is
-        // relevant for linting, since this is the self type of the `impl` we're currently in. To
-        // avoid linting on nested items, we push `StackItem::NoCheck` on the stack to signal, that
-        // we're in an `impl` or nested item, that we don't want to lint
+        // We push the self types of items on a stack here. Only the top type on the stack is
+        // relevant for linting, since this is the self type of the item we're currently in. To
+        // avoid linting on nested items, we push `StackItem::NoCheck` on the stack to signal that
+        // we're in an item or nested item that we don't want to lint
         let stack_item = if let ItemKind::Impl(Impl { self_ty, generics, .. }) = item.kind
             && let TyKind::Path(QPath::Resolved(_, item_path)) = self_ty.kind
             && let parameters = &item_path.segments.last().expect(SEGMENTS_MSG).args
@@ -112,6 +115,15 @@ impl<'tcx> LateLintPass<'tcx> for UseSelf {
                 impl_id: item.owner_id.def_id,
                 types_to_skip,
             }
+        } else if let ItemKind::Struct(..) | ItemKind::Enum(..) = item.kind
+            && self.recursive_self_in_type_definitions
+            && !item.span.from_expansion()
+            && !is_from_proc_macro(cx, item)
+        {
+            StackItem::Check {
+                impl_id: item.owner_id.def_id,
+                types_to_skip: FxHashSet::default(),
+            }
         } else {
             StackItem::NoCheck
         };
@@ -131,13 +143,14 @@ impl<'tcx> LateLintPass<'tcx> for UseSelf {
         // We want to skip types in trait `impl`s that aren't declared as `Self` in the trait
         // declaration. The collection of those types is all this method implementation does.
         if let ImplItemKind::Fn(FnSig { decl, .. }, ..) = impl_item.kind
+            && let ImplItemImplKind::Trait { .. } = impl_item.impl_kind
             && let Some(&mut StackItem::Check {
                 impl_id,
                 ref mut types_to_skip,
                 ..
             }) = self.stack.last_mut()
-            && let Some(impl_trait_ref) = cx.tcx.impl_trait_ref(impl_id)
         {
+            let impl_trait_ref = cx.tcx.impl_trait_ref(impl_id);
             // `self_ty` is the semantic self type of `impl <trait> for <type>`. This cannot be
             // `Self`.
             let self_ty = impl_trait_ref.instantiate_identity().self_ty();
@@ -201,6 +214,7 @@ impl<'tcx> LateLintPass<'tcx> for UseSelf {
                 path.res,
                 Res::SelfTyParam { .. } | Res::SelfTyAlias { .. } | Res::Def(DefKind::TyParam, _)
             )
+            && !ty_is_in_generic_args(cx, hir_ty)
             && !types_to_skip.contains(&hir_ty.hir_id)
             && let ty = ty_from_hir_ty(cx, hir_ty.as_unambig_ty())
             && let impl_ty = cx.tcx.type_of(impl_id).instantiate_identity()
@@ -298,6 +312,38 @@ fn lint_path_to_variant(cx: &LateContext<'_>, path: &Path<'_>) {
             .with_hi(self_seg.args().span_ext().unwrap_or(self_seg.ident.span).hi());
         span_lint(cx, span);
     }
+}
+
+fn ty_is_in_generic_args<'tcx>(cx: &LateContext<'tcx>, hir_ty: &Ty<'tcx, AmbigArg>) -> bool {
+    cx.tcx.hir_parent_iter(hir_ty.hir_id).any(|(_, parent)| {
+        matches!(parent, Node::ImplItem(impl_item) if impl_item.generics.params.iter().any(|param| {
+            let GenericParamKind::Const { ty: const_ty, .. } = &param.kind else {
+                return false;
+            };
+            ty_contains_ty(const_ty, hir_ty)
+        }))
+    })
+}
+
+fn ty_contains_ty<'tcx>(outer: &Ty<'tcx>, inner: &Ty<'tcx, AmbigArg>) -> bool {
+    struct ContainsVisitor<'tcx> {
+        inner: &'tcx Ty<'tcx, AmbigArg>,
+    }
+
+    impl<'tcx> Visitor<'tcx> for ContainsVisitor<'tcx> {
+        type Result = ControlFlow<()>;
+
+        fn visit_ty(&mut self, t: &'tcx Ty<'tcx, AmbigArg>) -> Self::Result {
+            if t.hir_id == self.inner.hir_id {
+                return ControlFlow::Break(());
+            }
+
+            walk_ty(self, t)
+        }
+    }
+
+    let mut visitor = ContainsVisitor { inner };
+    visitor.visit_ty_unambig(outer).is_break()
 }
 
 /// Checks whether types `a` and `b` have the same lifetime parameters.

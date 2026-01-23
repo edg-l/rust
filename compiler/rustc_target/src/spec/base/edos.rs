@@ -1,10 +1,10 @@
 use crate::spec::{
-    Cc, LinkerFlavor, Lld, PanicStrategy, RelocModel, RelroLevel, StackProbeType, TargetOptions,
+    Cc, LinkerFlavor, Lld, Os, PanicStrategy, RelocModel, RelroLevel, StackProbeType, TargetOptions,
 };
 
 pub(crate) fn opts() -> TargetOptions {
     TargetOptions {
-        os: "edos".into(),
+        os: Os::Edos,
         linker: Some("rust-lld".into()),
         linker_flavor: LinkerFlavor::Gnu(Cc::No, Lld::Yes),
         tls_model: crate::spec::TlsModel::LocalExec,

@@ -3,6 +3,7 @@
 use std::mem;
 
 use rustc_ast as ast;
+use rustc_ast::attr::contains_name;
 use rustc_ast::entry::EntryPointType;
 use rustc_ast::mut_visit::*;
 use rustc_ast::visit::Visitor;
@@ -172,9 +173,11 @@ impl<'a> Visitor<'a> for InnerItemLinter<'_> {
 
 fn entry_point_type(item: &ast::Item, at_root: bool) -> EntryPointType {
     match &item.kind {
-        ast::ItemKind::Fn(fn_) => {
-            rustc_ast::entry::entry_point_type(&item.attrs, at_root, Some(fn_.ident.name))
-        }
+        ast::ItemKind::Fn(fn_) => rustc_ast::entry::entry_point_type(
+            contains_name(&item.attrs, sym::rustc_main),
+            at_root,
+            Some(fn_.ident.name),
+        ),
         _ => EntryPointType::None,
     }
 }
@@ -342,6 +345,7 @@ fn mk_main(cx: &mut TestCtxt<'_>) -> Box<ast::Item> {
         contract: None,
         body: Some(main_body),
         define_opaque: None,
+        eii_impls: ThinVec::new(),
     }));
 
     let main = Box::new(ast::Item {

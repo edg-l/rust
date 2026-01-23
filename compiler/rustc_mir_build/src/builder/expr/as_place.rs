@@ -1,9 +1,9 @@
 //! See docs in build/expr/mod.rs
 
-use std::assert_matches::assert_matches;
 use std::iter;
 
 use rustc_abi::{FIRST_VARIANT, FieldIdx, VariantIdx};
+use rustc_data_structures::assert_matches;
 use rustc_hir::def_id::LocalDefId;
 use rustc_middle::hir::place::{Projection as HirProjection, ProjectionKind as HirProjectionKind};
 use rustc_middle::mir::AssertKind::BoundsCheck;
@@ -16,6 +16,7 @@ use tracing::{debug, instrument, trace};
 
 use crate::builder::ForGuard::{OutsideGuard, RefWithinGuard};
 use crate::builder::expr::category::Category;
+use crate::builder::scope::LintLevel;
 use crate::builder::{BlockAnd, BlockAndExtension, Builder, Capture, CaptureMap};
 
 /// The "outermost" place that holds this value.
@@ -423,12 +424,12 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         let expr = &self.thir[expr_id];
         debug!("expr_as_place(block={:?}, expr={:?}, mutability={:?})", block, expr, mutability);
 
-        let this = self;
+        let this = self; // See "LET_THIS_SELF".
         let expr_span = expr.span;
         let source_info = this.source_info(expr_span);
         match expr.kind {
-            ExprKind::Scope { region_scope, lint_level, value } => {
-                this.in_scope((region_scope, source_info), lint_level, |this| {
+            ExprKind::Scope { region_scope, hir_id, value } => {
+                this.in_scope((region_scope, source_info), LintLevel::Explicit(hir_id), |this| {
                     this.expr_as_place(block, value, mutability, fake_borrow_temps)
                 })
             }
@@ -454,7 +455,6 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 index,
                 mutability,
                 fake_borrow_temps,
-                expr.temp_lifetime,
                 expr_span,
                 source_info,
             ),
@@ -504,10 +504,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 block.and(place_builder)
             }
             ExprKind::ValueTypeAscription { source, ref user_ty, user_ty_span } => {
-                let source_expr = &this.thir[source];
-                let temp = unpack!(
-                    block = this.as_temp(block, source_expr.temp_lifetime, source, mutability)
-                );
+                let temp_lifetime =
+                    this.region_scope_tree.temporary_scope(this.thir[source].temp_scope_id);
+                let temp = unpack!(block = this.as_temp(block, temp_lifetime, source, mutability));
                 if let Some(user_ty) = user_ty {
                     let ty_source_info = this.source_info(user_ty_span);
                     let annotation_index =
@@ -540,10 +539,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 block.and(place_builder.project(PlaceElem::UnwrapUnsafeBinder(expr.ty)))
             }
             ExprKind::ValueUnwrapUnsafeBinder { source } => {
-                let source_expr = &this.thir[source];
-                let temp = unpack!(
-                    block = this.as_temp(block, source_expr.temp_lifetime, source, mutability)
-                );
+                let temp_lifetime =
+                    this.region_scope_tree.temporary_scope(this.thir[source].temp_scope_id);
+                let temp = unpack!(block = this.as_temp(block, temp_lifetime, source, mutability));
                 block.and(PlaceBuilder::from(temp).project(PlaceElem::UnwrapUnsafeBinder(expr.ty)))
             }
 
@@ -583,7 +581,6 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             | ExprKind::ConstBlock { .. }
             | ExprKind::StaticRef { .. }
             | ExprKind::InlineAsm { .. }
-            | ExprKind::OffsetOf { .. }
             | ExprKind::Yield { .. }
             | ExprKind::ThreadLocalRef(_)
             | ExprKind::Call { .. }
@@ -591,8 +588,8 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             | ExprKind::WrapUnsafeBinder { .. } => {
                 // these are not places, so we need to make a temporary.
                 debug_assert!(!matches!(Category::of(&expr.kind), Some(Category::Place)));
-                let temp =
-                    unpack!(block = this.as_temp(block, expr.temp_lifetime, expr_id, mutability));
+                let temp_lifetime = this.region_scope_tree.temporary_scope(expr.temp_scope_id);
+                let temp = unpack!(block = this.as_temp(block, temp_lifetime, expr_id, mutability));
                 block.and(PlaceBuilder::from(temp))
             }
         }
@@ -625,7 +622,6 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         index: ExprId,
         mutability: Mutability,
         fake_borrow_temps: Option<&mut Vec<Local>>,
-        temp_lifetime: TempLifetime,
         expr_span: Span,
         source_info: SourceInfo,
     ) -> BlockAnd<PlaceBuilder<'tcx>> {
@@ -639,7 +635,11 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         // Making this a *fresh* temporary means we do not have to worry about
         // the index changing later: Nothing will ever change this temporary.
         // The "retagging" transformation (for Stacked Borrows) relies on this.
-        let idx = unpack!(block = self.as_temp(block, temp_lifetime, index, Mutability::Not));
+        // Using the enclosing temporary scope for the index ensures it will live past where this
+        // place is used. This lifetime may be larger than strictly necessary but it means we don't
+        // need to pass a scope for operands to `as_place`.
+        let index_lifetime = self.region_scope_tree.temporary_scope(self.thir[index].temp_scope_id);
+        let idx = unpack!(block = self.as_temp(block, index_lifetime, index, Mutability::Not));
 
         block = self.bounds_check(block, &base_place, idx, expr_span, source_info);
 

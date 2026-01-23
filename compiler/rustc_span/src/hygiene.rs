@@ -1247,6 +1247,7 @@ pub enum DesugaringKind {
         /// rewriting it.
         source: bool,
     },
+    RangeExpr,
 }
 
 impl DesugaringKind {
@@ -1268,6 +1269,7 @@ impl DesugaringKind {
             DesugaringKind::FormatLiteral { source: false } => {
                 "expression that expanded into a format string literal"
             }
+            DesugaringKind::RangeExpr => "range expression",
         }
     }
 
@@ -1287,6 +1289,7 @@ impl DesugaringKind {
             DesugaringKind::Contract => value == "Contract",
             DesugaringKind::PatTyRange => value == "PatTyRange",
             DesugaringKind::FormatLiteral { .. } => value == "FormatLiteral",
+            DesugaringKind::RangeExpr => value == "RangeExpr",
         }
     }
 }
@@ -1566,5 +1569,11 @@ impl<CTX: HashStableContext> HashStable<CTX> for ExpnId {
         };
 
         hash.hash_stable(ctx, hasher);
+    }
+}
+
+impl<CTX: HashStableContext> HashStable<CTX> for LocalExpnId {
+    fn hash_stable(&self, hcx: &mut CTX, hasher: &mut StableHasher) {
+        self.to_expn_id().hash_stable(hcx, hasher);
     }
 }

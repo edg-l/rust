@@ -4,6 +4,7 @@ use std::iter::once;
 use std::sync::Arc;
 
 use rustc_data_structures::fx::FxHashSet;
+use rustc_data_structures::thin_vec::{ThinVec, thin_vec};
 use rustc_hir as hir;
 use rustc_hir::Mutability;
 use rustc_hir::def::{DefKind, MacroKinds, Res};
@@ -14,7 +15,6 @@ use rustc_middle::ty::{self, TyCtxt};
 use rustc_span::def_id::LOCAL_CRATE;
 use rustc_span::hygiene::MacroKind;
 use rustc_span::symbol::{Symbol, sym};
-use thin_vec::{ThinVec, thin_vec};
 use tracing::{debug, trace};
 
 use super::{Item, extract_cfg_from_attrs};
@@ -227,6 +227,30 @@ pub(crate) fn item_relative_path(tcx: TyCtxt<'_>, def_id: DefId) -> Vec<Symbol> 
     tcx.def_path(def_id).data.into_iter().filter_map(|elem| elem.data.get_opt_name()).collect()
 }
 
+/// Get the public Rust path to an item. This is used to generate the URL to the item's page.
+///
+/// In particular: we handle macro differently: if it's not a macro 2.0 oe a built-in macro, then
+/// it is generated at the top-level of the crate and its path will be `[crate_name, macro_name]`.
+pub(crate) fn get_item_path(tcx: TyCtxt<'_>, def_id: DefId, kind: ItemType) -> Vec<Symbol> {
+    let crate_name = tcx.crate_name(def_id.krate);
+    let relative = item_relative_path(tcx, def_id);
+
+    if let ItemType::Macro = kind {
+        // Check to see if it is a macro 2.0 or built-in macro
+        // More information in <https://rust-lang.github.io/rfcs/1584-macros.html>.
+        if matches!(
+            CStore::from_tcx(tcx).load_macro_untracked(tcx, def_id),
+            LoadedMacro::MacroDef { def, .. } if !def.macro_rules
+        ) {
+            once(crate_name).chain(relative).collect()
+        } else {
+            vec![crate_name, *relative.last().expect("relative was empty")]
+        }
+    } else {
+        once(crate_name).chain(relative).collect()
+    }
+}
+
 /// Record an external fully qualified name in the external_paths cache.
 ///
 /// These names are used later on by HTML rendering to generate things like
@@ -240,27 +264,12 @@ pub(crate) fn record_extern_fqn(cx: &mut DocContext<'_>, did: DefId, kind: ItemT
         return;
     }
 
-    let crate_name = cx.tcx.crate_name(did.krate);
-
-    let relative = item_relative_path(cx.tcx, did);
-    let fqn = if let ItemType::Macro = kind {
-        // Check to see if it is a macro 2.0 or built-in macro
-        if matches!(
-            CStore::from_tcx(cx.tcx).load_macro_untracked(did, cx.tcx),
-            LoadedMacro::MacroDef { def, .. } if !def.macro_rules
-        ) {
-            once(crate_name).chain(relative).collect()
-        } else {
-            vec![crate_name, *relative.last().expect("relative was empty")]
-        }
-    } else {
-        once(crate_name).chain(relative).collect()
-    };
+    let item_path = get_item_path(cx.tcx, did, kind);
 
     if did.is_local() {
-        cx.cache.exact_paths.insert(did, fqn);
+        cx.cache.exact_paths.insert(did, item_path);
     } else {
-        cx.cache.external_paths.insert(did, (fqn, kind));
+        cx.cache.external_paths.insert(did, (item_path, kind));
     }
 }
 
@@ -448,7 +457,7 @@ pub(crate) fn build_impl(
     let tcx = cx.tcx;
     let _prof_timer = tcx.sess.prof.generic_activity("build_impl");
 
-    let associated_trait = tcx.impl_trait_ref(did).map(ty::EarlyBinder::skip_binder);
+    let associated_trait = tcx.impl_opt_trait_ref(did).map(ty::EarlyBinder::skip_binder);
 
     // Do not inline compiler-internal items unless we're a compiler-internal crate.
     let is_compiler_internal = |did| {
@@ -497,7 +506,7 @@ pub(crate) fn build_impl(
         return;
     }
 
-    let document_hidden = cx.render_options.document_hidden;
+    let document_hidden = cx.document_hidden();
     let (trait_items, generics) = match impl_item {
         Some(impl_) => (
             impl_
@@ -552,7 +561,7 @@ pub(crate) fn build_impl(
                             .find_by_ident_and_kind(
                                 tcx,
                                 item.ident(tcx),
-                                item.as_tag(),
+                                item.tag(),
                                 associated_trait.def_id,
                             )
                             .unwrap(); // corresponding associated item has to exist
@@ -566,7 +575,11 @@ pub(crate) fn build_impl(
             clean::enter_impl_trait(cx, |cx| clean_ty_generics(cx, did)),
         ),
     };
-    let polarity = tcx.impl_polarity(did);
+    let polarity = if associated_trait.is_some() {
+        tcx.impl_polarity(did)
+    } else {
+        ty::ImplPolarity::Positive
+    };
     let trait_ = associated_trait
         .map(|t| clean_trait_ref_with_constraints(cx, ty::Binder::dummy(t), ThinVec::new()));
     if trait_.as_ref().map(|t| t.def_id()) == tcx.lang_items().deref_trait() {
@@ -627,11 +640,14 @@ pub(crate) fn build_impl(
             for_,
             items: trait_items,
             polarity,
-            kind: if utils::has_doc_flag(tcx, did, sym::fake_variadic) {
+            kind: if utils::has_doc_flag(tcx, did, |d| d.fake_variadic.is_some()) {
                 ImplKind::FakeVariadic
             } else {
                 ImplKind::Normal
             },
+            is_deprecated: tcx
+                .lookup_deprecation(did)
+                .is_some_and(|deprecation| deprecation.is_in_effect()),
         })),
         merged_attrs,
         cfg,
@@ -759,7 +775,7 @@ fn build_macro(
     name: Symbol,
     macro_kinds: MacroKinds,
 ) -> clean::ItemKind {
-    match CStore::from_tcx(cx.tcx).load_macro_untracked(def_id, cx.tcx) {
+    match CStore::from_tcx(cx.tcx).load_macro_untracked(cx.tcx, def_id) {
         // FIXME: handle attributes and derives that aren't proc macros, and macros with multiple
         // kinds
         LoadedMacro::MacroDef { def, .. } => match macro_kinds {

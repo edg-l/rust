@@ -1,6 +1,11 @@
 //@ edition: 2024
 
-#![feature(associated_const_equality, type_alias_impl_trait, return_type_notation)]
+#![feature(
+    min_generic_const_args,
+    type_alias_impl_trait,
+    return_type_notation
+)]
+#![expect(incomplete_features)]
 #![allow(refining_impl_trait_internal)]
 
 use std::iter;
@@ -45,6 +50,7 @@ fn mismatch_2() -> impl Iterator<Item: Copy, Item: Send> {
 trait Trait {
     type Gat<T>;
 
+    #[type_const]
     const ASSOC: i32;
 
     fn foo() -> impl Sized;
@@ -53,6 +59,7 @@ trait Trait {
 impl Trait for () {
     type Gat<T> = ();
 
+    #[type_const]
     const ASSOC: i32 = 3;
 
     fn foo() {}
@@ -61,6 +68,7 @@ impl Trait for () {
 impl Trait for u32 {
     type Gat<T> = ();
 
+    #[type_const]
     const ASSOC: i32 = 4;
 
     fn foo() -> u32 {
@@ -72,19 +80,22 @@ fn uncallable(_: impl Iterator<Item = i32, Item = u32>) {}
 
 fn uncallable_const(_: impl Trait<ASSOC = 3, ASSOC = 4>) {}
 
-fn uncallable_rtn(_: impl Trait<foo(..): Trait<ASSOC = 3>, foo(..): Trait<ASSOC = 4>>) {}
+fn uncallable_rtn(
+    _: impl Trait<foo(..): Trait<ASSOC = 3>, foo(..): Trait<ASSOC = 4>>
+) {}
 
 type MustFail = dyn Iterator<Item = i32, Item = u32>;
 //~^ ERROR [E0719]
-//~| ERROR conflicting associated type bounds
+//~| ERROR conflicting associated type bindings
 
 trait Trait2 {
+    #[type_const]
     const ASSOC: u32;
 }
 
 type MustFail2 = dyn Trait2<ASSOC = 3u32, ASSOC = 4u32>;
 //~^ ERROR [E0719]
-//~| ERROR conflicting associated type bounds
+//~| ERROR conflicting associated constant bindings
 
 type MustFail3 = dyn Iterator<Item = i32, Item = i32>;
 //~^ ERROR [E0719]

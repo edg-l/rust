@@ -6,7 +6,7 @@ use super::{check, check_infer, check_infer_with_mismatches, check_no_mismatches
 fn infer_pattern() {
     check_infer(
         r#"
-        //- minicore: iterator
+        //- minicore: iterator, add, builtin_impls
         fn test(x: &i32) {
             let y = x;
             let &z = x;
@@ -189,25 +189,44 @@ fn infer_literal_pattern() {
 fn infer_range_pattern() {
     check_infer_with_mismatches(
         r#"
-        fn test(x: &i32) {
-            if let 1..76 = 2u32 {}
-            if let 1..=76 = 2u32 {}
-        }
+//- minicore: range
+fn test(x..y: &core::ops::Range<u32>) {
+    if let 1..76 = 2u32 {}
+    if let 1..=76 = 2u32 {}
+}
         "#,
         expect![[r#"
-            8..9 'x': &'? i32
-            17..75 '{     ...2 {} }': ()
-            23..45 'if let...u32 {}': ()
-            26..42 'let 1....= 2u32': bool
-            30..35 '1..76': u32
-            38..42 '2u32': u32
-            43..45 '{}': ()
-            50..73 'if let...u32 {}': ()
-            53..70 'let 1....= 2u32': bool
-            57..63 '1..=76': u32
-            66..70 '2u32': u32
-            71..73 '{}': ()
+            8..9 'x': Range<u32>
+            8..12 'x..y': Range<u32>
+            11..12 'y': Range<u32>
+            38..96 '{     ...2 {} }': ()
+            44..66 'if let...u32 {}': ()
+            47..63 'let 1....= 2u32': bool
+            51..52 '1': u32
+            51..56 '1..76': u32
+            54..56 '76': u32
+            59..63 '2u32': u32
+            64..66 '{}': ()
+            71..94 'if let...u32 {}': ()
+            74..91 'let 1....= 2u32': bool
+            78..79 '1': u32
+            78..84 '1..=76': u32
+            82..84 '76': u32
+            87..91 '2u32': u32
+            92..94 '{}': ()
         "#]],
+    );
+    check_no_mismatches(
+        r#"
+//- minicore: range
+fn main() {
+    let byte: u8 = 0u8;
+    let b = match byte {
+        b'0'..=b'9' => true,
+        _ => false,
+    };
+}
+    "#,
     );
 }
 
@@ -775,6 +794,8 @@ fn slice_tail_pattern() {
 fn box_pattern() {
     check_infer(
         r#"
+        #![feature(lang_items)]
+
         pub struct Global;
         #[lang = "owned_box"]
         pub struct Box<T, A = Global>(T);
@@ -786,13 +807,13 @@ fn box_pattern() {
         }
         "#,
         expect![[r#"
-            83..89 'params': Box<i32, Global>
-            101..155 '{     ...   } }': ()
-            107..153 'match ...     }': ()
-            113..119 'params': Box<i32, Global>
-            130..141 'box integer': Box<i32, Global>
-            134..141 'integer': i32
-            145..147 '{}': ()
+            108..114 'params': Box<i32, Global>
+            126..180 '{     ...   } }': ()
+            132..178 'match ...     }': ()
+            138..144 'params': Box<i32, Global>
+            155..166 'box integer': Box<i32, Global>
+            159..166 'integer': i32
+            170..172 '{}': ()
         "#]],
     );
     check_infer(
@@ -812,7 +833,6 @@ fn box_pattern() {
             76..122 'match ...     }': ()
             82..88 'params': Box<i32>
             99..110 'box integer': Box<i32>
-            103..110 'integer': i32
             114..116 '{}': ()
         "#]],
     );
@@ -1123,6 +1143,7 @@ fn my_fn(#[cfg(feature = "feature")] u8: u8, u32: u32) {}
 fn var_args() {
     check_types(
         r#"
+#![feature(lang_items)]
 #[lang = "va_list"]
 pub struct VaListImpl<'f>;
 fn my_fn(foo: ...) {}
@@ -1137,6 +1158,7 @@ fn my_fn2(bar: u32, foo: ...) {}
 fn var_args_cond() {
     check_types(
         r#"
+#![feature(lang_items)]
 #[lang = "va_list"]
 pub struct VaListImpl<'f>;
 fn my_fn(bar: u32, #[cfg(FALSE)] foo: ..., #[cfg(not(FALSE))] foo: u32) {
@@ -1257,5 +1279,24 @@ fn main() {
 }
 
             "#,
+    );
+}
+
+#[test]
+fn destructuring_assign_ref() {
+    check_no_mismatches(
+        r#"
+struct Foo;
+
+fn foo() -> (&'static Foo, u32) {
+    (&Foo, 0)
+}
+
+fn bar() {
+    let ext: &Foo;
+    let v;
+    (ext, v) = foo();
+}
+    "#,
     );
 }

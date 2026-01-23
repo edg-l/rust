@@ -2,30 +2,29 @@
 
 use std::iter;
 
+use rustc_ast_ir::Mutability;
+
 use crate::{
     Adjust, Adjustment, OverloadedDeref,
-    autoderef::{Autoderef, AutoderefKind},
+    autoderef::{Autoderef, AutoderefCtx, AutoderefKind, GeneralAutoderef},
     infer::unify::InferenceTable,
     next_solver::{
         Ty,
         infer::{InferOk, traits::PredicateObligations},
-        mapping::NextSolverToChalk,
     },
 };
 
 impl<'db> InferenceTable<'db> {
-    pub(crate) fn autoderef(&mut self, base_ty: Ty<'db>) -> Autoderef<'_, 'db> {
-        Autoderef::new(self, base_ty)
+    pub(crate) fn autoderef(&self, base_ty: Ty<'db>) -> Autoderef<'_, 'db, usize> {
+        Autoderef::new(&self.infer_ctxt, self.param_env, base_ty)
+    }
+
+    pub(crate) fn autoderef_with_tracking(&self, base_ty: Ty<'db>) -> Autoderef<'_, 'db> {
+        Autoderef::new_with_tracking(&self.infer_ctxt, self.param_env, base_ty)
     }
 }
 
-impl<'db> Autoderef<'_, 'db> {
-    /// Returns the adjustment steps.
-    pub(crate) fn adjust_steps(mut self) -> Vec<Adjustment> {
-        let infer_ok = self.adjust_steps_as_infer_ok();
-        self.table.register_infer_ok(infer_ok)
-    }
-
+impl<'db, Ctx: AutoderefCtx<'db>> GeneralAutoderef<'db, Ctx> {
     pub(crate) fn adjust_steps_as_infer_ok(&mut self) -> InferOk<'db, Vec<Adjustment>> {
         let steps = self.steps();
         if steps.is_empty() {
@@ -37,7 +36,7 @@ impl<'db> Autoderef<'_, 'db> {
             .iter()
             .map(|&(_source, kind)| {
                 if let AutoderefKind::Overloaded = kind {
-                    Some(OverloadedDeref(Some(chalk_ir::Mutability::Not)))
+                    Some(OverloadedDeref(Some(Mutability::Not)))
                 } else {
                     None
                 }
@@ -45,7 +44,7 @@ impl<'db> Autoderef<'_, 'db> {
             .zip(targets)
             .map(|(autoderef, target)| Adjustment {
                 kind: Adjust::Deref(autoderef),
-                target: target.to_chalk(self.table.interner),
+                target: target.store(),
             })
             .collect();
 

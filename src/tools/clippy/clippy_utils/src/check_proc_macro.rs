@@ -121,7 +121,6 @@ fn qpath_search_pat(path: &QPath<'_>) -> (Pat, Pat) {
             (start, end)
         },
         QPath::TypeRelative(_, name) => (Pat::Str(""), Pat::Sym(name.ident.name)),
-        QPath::LangItem(..) => (Pat::Str(""), Pat::Str("")),
     }
 }
 
@@ -266,7 +265,14 @@ fn item_search_pat(item: &Item<'_>) -> (Pat, Pat) {
         ItemKind::Trait(_, IsAuto::Yes, ..) => (Pat::Str("auto"), Pat::Str("}")),
         ItemKind::Trait(..) => (Pat::Str("trait"), Pat::Str("}")),
         ItemKind::Impl(_) => (Pat::Str("impl"), Pat::Str("}")),
-        _ => return (Pat::Str(""), Pat::Str("")),
+        ItemKind::Mod(..) => (Pat::Str("mod"), Pat::Str("")),
+        ItemKind::Macro(_, def, _) => (
+            Pat::Str(if def.macro_rules { "macro_rules" } else { "macro" }),
+            Pat::Str(""),
+        ),
+        ItemKind::TraitAlias(..) => (Pat::Str("trait"), Pat::Str(";")),
+        ItemKind::GlobalAsm { .. } => return (Pat::Str("global_asm"), Pat::Str("")),
+        ItemKind::Use(..) => return (Pat::Str(""), Pat::Str("")),
     };
     if item.vis_span.is_empty() {
         (start_pat, end_pat)
@@ -342,9 +348,9 @@ fn fn_kind_pat(tcx: TyCtxt<'_>, kind: &FnKind<'_>, body: &Body<'_>, hir_id: HirI
 fn attr_search_pat(attr: &Attribute) -> (Pat, Pat) {
     match attr.kind {
         AttrKind::Normal(..) => {
-            if let Some(ident) = attr.ident() {
+            if let Some(name) = attr.name() {
                 // NOTE: This will likely have false positives, like `allow = 1`
-                let ident_string = ident.to_string();
+                let ident_string = name.to_string();
                 if attr.style == AttrStyle::Outer {
                     (
                         Pat::OwnedMultiStr(vec!["#[".to_owned() + &ident_string, ident_string]),
@@ -490,17 +496,14 @@ fn ast_ty_search_pat(ty: &ast::Ty) -> (Pat, Pat) {
                     None => ident_search_pat(last.ident).1,
                 }
             } else {
-                // this shouldn't be possible, but sure
-                #[allow(
-                    clippy::collapsible_else_if,
-                    reason = "we want to keep these cases together, since they are both impossible"
-                )]
-                if qself_path.is_some() {
-                    // last `>` in `<Vec as IntoIterator>`
-                    Pat::Str(">")
-                } else {
-                    Pat::Str("")
-                }
+                // this shouldn't be possible
+                Pat::Str(
+                    if qself_path.is_some() {
+                        ">"  // last `>` in `<Vec as IntoIterator>`
+                    } else {
+                        ""
+                    }
+                )
             };
             (start, end)
         },
@@ -528,11 +531,10 @@ fn ast_ty_search_pat(ty: &ast::Ty) -> (Pat, Pat) {
         TyKind::ImplicitSelf
 
         // experimental
-        |TyKind::Pat(..)
+        | TyKind::Pat(..)
 
         // unused
         | TyKind::CVarArgs
-        | TyKind::Typeof(_)
 
         // placeholder
         | TyKind::Dummy

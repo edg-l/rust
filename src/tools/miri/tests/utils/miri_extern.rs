@@ -119,6 +119,11 @@ extern "Rust" {
     /// Miri-provided extern function to deallocate memory.
     pub fn miri_dealloc(ptr: *mut u8, size: usize, align: usize);
 
+    /// Add the allocation that this pointer points to to the "tracked" allocations.
+    /// This is equivalent to `-Zmiri-track-allic-id=<id>`, but also works if the ID is
+    /// only known at runtime.
+    pub fn miri_track_alloc(ptr: *const u8);
+
     /// Convert a path from the host Miri runs on to the target Miri interprets.
     /// Performs conversion of path separators as needed.
     ///
@@ -150,4 +155,20 @@ extern "Rust" {
 
     /// Blocks the current execution if the argument is false
     pub fn miri_genmc_assume(condition: bool);
+
+    /// Miri-provided extern function to spawn a new thread in the interpreter.
+    ///
+    /// Returns the thread id.
+    ///
+    /// This is useful when no fundamental way of spawning threads is available, e.g. when using
+    /// `no_std`.
+    pub fn miri_thread_spawn(t: extern "Rust" fn(*mut ()), data: *mut ()) -> usize;
+
+    /// Miri-provided extern function to join a thread that was spawned by Miri.
+    pub fn miri_thread_join(thread_id: usize) -> bool;
+
+    /// Indicate to Miri that this thread is busy-waiting in a spin loop.
+    ///
+    /// As far as Miri is concerned, this is equivalent to `yield_now`.
+    pub fn miri_spin_loop();
 }

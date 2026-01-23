@@ -2,6 +2,7 @@ use rustc_abi::CanonAbi;
 use rustc_middle::ty::Ty;
 use rustc_span::Symbol;
 use rustc_target::callconv::FnAbi;
+use rustc_target::spec::Os;
 
 use crate::shims::unix::foreign_items::EvalContextExt as _;
 use crate::shims::unix::linux_like::epoll::EvalContextExt as _;
@@ -26,26 +27,26 @@ pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
         match link_name.as_str() {
             // epoll, eventfd (NOT available on Solaris!)
             "epoll_create1" => {
-                this.assert_target_os("illumos", "epoll_create1");
+                this.assert_target_os(Os::Illumos, "epoll_create1");
                 let [flag] = this.check_shim_sig_lenient(abi, CanonAbi::C, link_name, args)?;
                 let result = this.epoll_create1(flag)?;
                 this.write_scalar(result, dest)?;
             }
             "epoll_ctl" => {
-                this.assert_target_os("illumos", "epoll_ctl");
+                this.assert_target_os(Os::Illumos, "epoll_ctl");
                 let [epfd, op, fd, event] =
                     this.check_shim_sig_lenient(abi, CanonAbi::C, link_name, args)?;
                 let result = this.epoll_ctl(epfd, op, fd, event)?;
                 this.write_scalar(result, dest)?;
             }
             "epoll_wait" => {
-                this.assert_target_os("illumos", "epoll_wait");
+                this.assert_target_os(Os::Illumos, "epoll_wait");
                 let [epfd, events, maxevents, timeout] =
                     this.check_shim_sig_lenient(abi, CanonAbi::C, link_name, args)?;
                 this.epoll_wait(epfd, events, maxevents, timeout, dest)?;
             }
             "eventfd" => {
-                this.assert_target_os("illumos", "eventfd");
+                this.assert_target_os(Os::Illumos, "eventfd");
                 let [val, flag] = this.check_shim_sig_lenient(abi, CanonAbi::C, link_name, args)?;
                 let result = this.eventfd(val, flag)?;
                 this.write_scalar(result, dest)?;
@@ -89,22 +90,20 @@ pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
             }
 
             // File related shims
-            "stat" | "stat64" => {
+            "stat" => {
+                // FIXME: This does not have a direct test (#3179).
                 let [path, buf] = this.check_shim_sig_lenient(abi, CanonAbi::C, link_name, args)?;
-                let result = this.macos_fbsd_solarish_stat(path, buf)?;
+                let result = this.stat(path, buf)?;
                 this.write_scalar(result, dest)?;
             }
-            "lstat" | "lstat64" => {
+            "lstat" => {
+                // FIXME: This does not have a direct test (#3179).
                 let [path, buf] = this.check_shim_sig_lenient(abi, CanonAbi::C, link_name, args)?;
-                let result = this.macos_fbsd_solarish_lstat(path, buf)?;
-                this.write_scalar(result, dest)?;
-            }
-            "fstat" | "fstat64" => {
-                let [fd, buf] = this.check_shim_sig_lenient(abi, CanonAbi::C, link_name, args)?;
-                let result = this.macos_fbsd_solarish_fstat(fd, buf)?;
+                let result = this.lstat(path, buf)?;
                 this.write_scalar(result, dest)?;
             }
             "readdir" => {
+                // FIXME: This does not have a direct test (#3179).
                 let [dirp] = this.check_shim_sig_lenient(abi, CanonAbi::C, link_name, args)?;
                 let result = this.readdir64("dirent", dirp)?;
                 this.write_scalar(result, dest)?;
@@ -126,6 +125,7 @@ pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
             }
 
             "stack_getbounds" => {
+                // FIXME: This does not have a direct test (#3179).
                 let [stack] = this.check_shim_sig_lenient(abi, CanonAbi::C, link_name, args)?;
                 let stack = this.deref_pointer_as(stack, this.libc_ty_layout("stack_t"))?;
 
@@ -144,6 +144,7 @@ pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
             }
 
             "pset_info" => {
+                // FIXME: This does not have a direct test (#3179).
                 let [pset, tpe, cpus, list] =
                     this.check_shim_sig_lenient(abi, CanonAbi::C, link_name, args)?;
                 // We do not need to handle the current process cpu mask, available_parallelism

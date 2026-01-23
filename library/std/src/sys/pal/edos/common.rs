@@ -19,10 +19,6 @@ pub fn unsupported_err() -> std_io::Error {
     std_io::Error::UNSUPPORTED_PLATFORM
 }
 
-pub fn is_interrupted(_code: i32) -> bool {
-    false
-}
-
 pub fn decode_error_kind(code: i32) -> crate::io::ErrorKind {
     let errno: Errno = unsafe { core::mem::transmute(code as u64) };
     match errno {

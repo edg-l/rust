@@ -38,8 +38,9 @@ use self::namespace::mangled_name_of_instance;
 use self::utils::{DIB, create_DIArray, is_node_local_to_unit};
 use crate::builder::Builder;
 use crate::common::{AsCCharPtr, CodegenCx};
+use crate::debuginfo::di_builder::DIBuilderBox;
 use crate::llvm::debuginfo::{
-    DIArray, DIBuilderBox, DIFile, DIFlags, DILexicalBlock, DILocation, DISPFlags, DIScope,
+    DIArray, DIFile, DIFlags, DILexicalBlock, DILocation, DISPFlags, DIScope,
     DITemplateTypeParameter, DIType, DIVariable,
 };
 use crate::llvm::{self, Value};
@@ -146,7 +147,7 @@ impl<'ll> Builder<'_, 'll, '_> {
     }
 }
 
-impl<'ll> DebugInfoBuilderMethods for Builder<'_, 'll, '_> {
+impl<'ll, 'tcx> DebugInfoBuilderMethods<'tcx> for Builder<'_, 'll, 'tcx> {
     // FIXME(eddyb) find a common convention for all of the debuginfo-related
     // names (choose between `dbg`, `debug`, `debuginfo`, `debug_info` etc.).
     fn dbg_var_addr(
@@ -284,6 +285,57 @@ impl<'ll> DebugInfoBuilderMethods for Builder<'_, 'll, '_> {
             llvm::set_value_name(value, name.as_bytes());
         }
     }
+
+    /// Annotate move/copy operations with debug info for profiling.
+    ///
+    /// This creates a temporary debug scope that makes the move/copy appear as an inlined call to
+    /// `compiler_move<T, SIZE>()` or `compiler_copy<T, SIZE>()`. The provided closure is executed
+    /// with this temporary debug location active.
+    ///
+    /// The `instance` parameter should be the monomorphized instance of the `compiler_move` or
+    /// `compiler_copy` function with the actual type and size.
+    fn with_move_annotation<R>(
+        &mut self,
+        instance: ty::Instance<'tcx>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        // Save the current debug location
+        let saved_loc = self.get_dbg_loc();
+
+        // Create a DIScope for the compiler_move/compiler_copy function
+        // We use the function's FnAbi for debug info generation
+        let fn_abi = self
+            .cx()
+            .tcx
+            .fn_abi_of_instance(
+                self.cx().typing_env().as_query_input((instance, ty::List::empty())),
+            )
+            .unwrap();
+
+        let di_scope = self.cx().dbg_scope_fn(instance, fn_abi, None);
+
+        // Create an inlined debug location:
+        // - scope: the compiler_move/compiler_copy function
+        // - inlined_at: the current location (where the move/copy actually occurs)
+        // - span: use the function's definition span
+        let fn_span = self.cx().tcx.def_span(instance.def_id());
+        let inlined_loc = self.cx().dbg_loc(di_scope, saved_loc, fn_span);
+
+        // Set the temporary debug location
+        self.set_dbg_loc(inlined_loc);
+
+        // Execute the closure (which will generate the memcpy)
+        let result = f(self);
+
+        // Restore the original debug location
+        if let Some(loc) = saved_loc {
+            self.set_dbg_loc(loc);
+        } else {
+            self.clear_dbg_loc();
+        }
+
+        result
+    }
 }
 
 /// A source code location used to generate debug information.
@@ -404,7 +456,7 @@ impl<'ll, 'tcx> DebugInfoCodegenMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         let generics = tcx.generics_of(enclosing_fn_def_id);
         let args = instance.args.truncate_to(tcx, generics);
 
-        type_names::push_generic_params(
+        type_names::push_generic_args(
             tcx,
             tcx.normalize_erasing_regions(self.typing_env(), args),
             &mut name,

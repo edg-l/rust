@@ -131,7 +131,7 @@ fn resolve_associated_item<'tcx>(
             assert!(!rcvr_args.has_infer());
             assert!(!trait_ref.has_infer());
 
-            let trait_def_id = tcx.trait_id_of_impl(impl_data.impl_def_id).unwrap();
+            let trait_def_id = tcx.impl_trait_id(impl_data.impl_def_id);
             let trait_def = tcx.trait_def(trait_def_id);
             let leaf_def = trait_def
                 .ancestors(tcx, impl_data.impl_def_id)?
@@ -221,8 +221,6 @@ fn resolve_associated_item<'tcx>(
                 );
                 return Err(guar);
             }
-
-            let args = tcx.erase_and_anonymize_regions(args);
 
             // We check that the impl item is compatible with the trait item
             // because otherwise we may ICE in const eval due to type mismatches,

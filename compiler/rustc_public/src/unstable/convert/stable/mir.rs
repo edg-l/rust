@@ -232,9 +232,6 @@ impl<'tcx> Stable<'tcx> for mir::Rvalue<'tcx> {
                     )
                 }
             }
-            NullaryOp(null_op, ty) => {
-                crate::mir::Rvalue::NullaryOp(null_op.stable(tables, cx), ty.stable(tables, cx))
-            }
             UnaryOp(un_op, op) => {
                 crate::mir::Rvalue::UnaryOp(un_op.stable(tables, cx), op.stable(tables, cx))
             }
@@ -314,22 +311,18 @@ impl<'tcx> Stable<'tcx> for mir::FakeBorrowKind {
     }
 }
 
-impl<'tcx> Stable<'tcx> for mir::NullOp<'tcx> {
-    type T = crate::mir::NullOp;
+impl<'tcx> Stable<'tcx> for mir::RuntimeChecks {
+    type T = crate::mir::RuntimeChecks;
     fn stable<'cx>(
         &self,
-        tables: &mut Tables<'cx, BridgeTys>,
-        cx: &CompilerCtxt<'cx, BridgeTys>,
+        _: &mut Tables<'cx, BridgeTys>,
+        _: &CompilerCtxt<'cx, BridgeTys>,
     ) -> Self::T {
-        use rustc_middle::mir::NullOp::*;
+        use rustc_middle::mir::RuntimeChecks::*;
         match self {
-            SizeOf => crate::mir::NullOp::SizeOf,
-            AlignOf => crate::mir::NullOp::AlignOf,
-            OffsetOf(indices) => crate::mir::NullOp::OffsetOf(
-                indices.iter().map(|idx| idx.stable(tables, cx)).collect(),
-            ),
-            UbChecks => crate::mir::NullOp::UbChecks,
-            ContractChecks => crate::mir::NullOp::ContractChecks,
+            UbChecks => crate::mir::RuntimeChecks::UbChecks,
+            ContractChecks => crate::mir::RuntimeChecks::ContractChecks,
+            OverflowChecks => crate::mir::RuntimeChecks::OverflowChecks,
         }
     }
 }
@@ -386,6 +379,7 @@ impl<'tcx> Stable<'tcx> for mir::Operand<'tcx> {
             Copy(place) => crate::mir::Operand::Copy(place.stable(tables, cx)),
             Move(place) => crate::mir::Operand::Move(place.stable(tables, cx)),
             Constant(c) => crate::mir::Operand::Constant(c.stable(tables, cx)),
+            RuntimeChecks(c) => crate::mir::Operand::RuntimeChecks(c.stable(tables, cx)),
         }
     }
 }

@@ -6,6 +6,11 @@ pub struct Instant(Duration);
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub struct SystemTime(Duration);
 
+impl SystemTime {
+    pub const MAX: SystemTime = SystemTime(Duration::MAX);
+    pub const MIN: SystemTime = SystemTime(Duration::ZERO);
+}
+
 pub const UNIX_EPOCH: SystemTime = SystemTime(Duration::from_secs(0));
 
 impl Instant {

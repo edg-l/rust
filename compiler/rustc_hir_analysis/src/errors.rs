@@ -4,11 +4,11 @@ use rustc_abi::ExternAbi;
 use rustc_errors::codes::*;
 use rustc_errors::{
     Applicability, Diag, DiagCtxtHandle, DiagSymbolList, Diagnostic, EmissionGuarantee, Level,
-    MultiSpan,
+    MultiSpan, listify,
 };
 use rustc_hir::limit::Limit;
 use rustc_macros::{Diagnostic, LintDiagnostic, Subdiagnostic};
-use rustc_middle::ty::Ty;
+use rustc_middle::ty::{self, Ty};
 use rustc_span::{Ident, Span, Symbol};
 
 use crate::fluent_generated as fluent;
@@ -191,7 +191,7 @@ pub(crate) struct LifetimesOrBoundsMismatchOnTrait {
     #[label]
     pub span: Span,
     #[label(hir_analysis_generics_label)]
-    pub generics_span: Option<Span>,
+    pub generics_span: Span,
     #[label(hir_analysis_where_label)]
     pub where_span: Option<Span>,
     #[label(hir_analysis_bounds_label)]
@@ -379,17 +379,6 @@ pub(crate) struct ParenthesizedFnTraitExpansion {
 }
 
 #[derive(Diagnostic)]
-#[diag(hir_analysis_typeof_reserved_keyword_used, code = E0516)]
-pub(crate) struct TypeofReservedKeywordUsed<'tcx> {
-    pub ty: Ty<'tcx>,
-    #[primary_span]
-    #[label]
-    pub span: Span,
-    #[suggestion(style = "verbose", code = "{ty}")]
-    pub opt_sugg: Option<(Span, Applicability)>,
-}
-
-#[derive(Diagnostic)]
 #[diag(hir_analysis_value_of_associated_struct_already_specified, code = E0719)]
 pub(crate) struct ValueOfAssociatedStructAlreadySpecified {
     #[primary_span]
@@ -411,35 +400,58 @@ pub(crate) struct UnconstrainedOpaqueType {
     pub what: &'static str,
 }
 
-pub(crate) struct MissingTypeParams {
+pub(crate) struct MissingGenericParams {
     pub span: Span,
     pub def_span: Span,
     pub span_snippet: Option<String>,
-    pub missing_type_params: Vec<Symbol>,
+    pub missing_generic_params: Vec<(Symbol, ty::GenericParamDefKind)>,
     pub empty_generic_args: bool,
 }
 
-// Manual implementation of `Diagnostic` to be able to call `span_to_snippet`.
-impl<'a, G: EmissionGuarantee> Diagnostic<'a, G> for MissingTypeParams {
+// FIXME: This doesn't need to be a manual impl!
+impl<'a, G: EmissionGuarantee> Diagnostic<'a, G> for MissingGenericParams {
     #[track_caller]
     fn into_diag(self, dcx: DiagCtxtHandle<'a>, level: Level) -> Diag<'a, G> {
-        let mut err = Diag::new(dcx, level, fluent::hir_analysis_missing_type_params);
+        let mut err = Diag::new(dcx, level, fluent::hir_analysis_missing_generic_params);
         err.span(self.span);
         err.code(E0393);
-        err.arg("parameterCount", self.missing_type_params.len());
-        err.arg(
-            "parameters",
-            self.missing_type_params
-                .iter()
-                .map(|n| format!("`{n}`"))
-                .collect::<Vec<_>>()
-                .join(", "),
-        );
-
         err.span_label(self.def_span, fluent::hir_analysis_label);
 
+        enum Descr {
+            Generic,
+            Type,
+            Const,
+        }
+
+        let mut descr = None;
+        for (_, kind) in &self.missing_generic_params {
+            descr = match (&descr, kind) {
+                (None, ty::GenericParamDefKind::Type { .. }) => Some(Descr::Type),
+                (None, ty::GenericParamDefKind::Const { .. }) => Some(Descr::Const),
+                (Some(Descr::Type), ty::GenericParamDefKind::Const { .. })
+                | (Some(Descr::Const), ty::GenericParamDefKind::Type { .. }) => {
+                    Some(Descr::Generic)
+                }
+                _ => continue,
+            }
+        }
+
+        err.arg(
+            "descr",
+            match descr.unwrap() {
+                Descr::Generic => "generic",
+                Descr::Type => "type",
+                Descr::Const => "const",
+            },
+        );
+        err.arg("parameterCount", self.missing_generic_params.len());
+        err.arg(
+            "parameters",
+            listify(&self.missing_generic_params, |(n, _)| format!("`{n}`")).unwrap(),
+        );
+
         let mut suggested = false;
-        // Don't suggest setting the type params if there are some already: the order is
+        // Don't suggest setting the generic params if there are some already: The order is
         // tricky to get right and the user will already know what the syntax is.
         if let Some(snippet) = self.span_snippet
             && self.empty_generic_args
@@ -449,16 +461,16 @@ impl<'a, G: EmissionGuarantee> Diagnostic<'a, G> for MissingTypeParams {
                 // we would have to preserve the right order. For now, as clearly the user is
                 // aware of the syntax, we do nothing.
             } else {
-                // The user wrote `Iterator`, so we don't have a type we can suggest, but at
-                // least we can clue them to the correct syntax `Iterator<Type>`.
+                // The user wrote `Trait`, so we don't have a type we can suggest, but at
+                // least we can clue them to the correct syntax `Trait</* Term */>`.
                 err.span_suggestion_verbose(
                     self.span.shrink_to_hi(),
                     fluent::hir_analysis_suggestion,
                     format!(
                         "<{}>",
-                        self.missing_type_params
+                        self.missing_generic_params
                             .iter()
-                            .map(|n| n.to_string())
+                            .map(|(n, _)| format!("/* {n} */"))
                             .collect::<Vec<_>>()
                             .join(", ")
                     ),
@@ -500,13 +512,8 @@ pub(crate) struct ConstImplForNonConstTrait {
     #[label]
     pub trait_ref_span: Span,
     pub trait_name: String,
-    #[suggestion(
-        applicability = "machine-applicable",
-        // FIXME(const_trait_impl) fix this suggestion
-        code = "#[const_trait] ",
-        style = "verbose"
-    )]
-    pub local_trait_span: Option<Span>,
+    #[suggestion(applicability = "machine-applicable", code = "const ", style = "verbose")]
+    pub suggestion: Option<Span>,
     pub suggestion_pre: &'static str,
     #[note]
     pub marking: (),
@@ -523,14 +530,9 @@ pub(crate) struct ConstBoundForNonConstTrait {
     pub modifier: &'static str,
     #[note]
     pub def_span: Option<Span>,
-    pub suggestion_pre: &'static str,
-    #[suggestion(
-        applicability = "machine-applicable",
-        // FIXME(const_trait_impl) fix this suggestion
-        code = "#[const_trait] ",
-        style = "verbose"
-    )]
+    #[suggestion(applicability = "machine-applicable", code = "const ", style = "verbose")]
     pub suggestion: Option<Span>,
+    pub suggestion_pre: &'static str,
     pub trait_name: String,
 }
 
@@ -760,66 +762,6 @@ pub(crate) struct EnumDiscriminantOverflowed {
 pub(crate) struct ParenSugarAttribute {
     #[primary_span]
     pub span: Span,
-}
-
-#[derive(Diagnostic)]
-#[diag(hir_analysis_must_implement_one_of_attribute)]
-pub(crate) struct MustImplementOneOfAttribute {
-    #[primary_span]
-    pub span: Span,
-}
-
-#[derive(Diagnostic)]
-#[diag(hir_analysis_must_be_name_of_associated_function)]
-pub(crate) struct MustBeNameOfAssociatedFunction {
-    #[primary_span]
-    pub span: Span,
-}
-
-#[derive(Diagnostic)]
-#[diag(hir_analysis_function_not_have_default_implementation)]
-pub(crate) struct FunctionNotHaveDefaultImplementation {
-    #[primary_span]
-    pub span: Span,
-    #[note]
-    pub note_span: Span,
-}
-
-#[derive(Diagnostic)]
-#[diag(hir_analysis_must_implement_not_function)]
-pub(crate) struct MustImplementNotFunction {
-    #[primary_span]
-    pub span: Span,
-    #[subdiagnostic]
-    pub span_note: MustImplementNotFunctionSpanNote,
-    #[subdiagnostic]
-    pub note: MustImplementNotFunctionNote,
-}
-
-#[derive(Subdiagnostic)]
-#[note(hir_analysis_must_implement_not_function_span_note)]
-pub(crate) struct MustImplementNotFunctionSpanNote {
-    #[primary_span]
-    pub span: Span,
-}
-
-#[derive(Subdiagnostic)]
-#[note(hir_analysis_must_implement_not_function_note)]
-pub(crate) struct MustImplementNotFunctionNote {}
-
-#[derive(Diagnostic)]
-#[diag(hir_analysis_function_not_found_in_trait)]
-pub(crate) struct FunctionNotFoundInTrait {
-    #[primary_span]
-    pub span: Span,
-}
-
-#[derive(Diagnostic)]
-#[diag(hir_analysis_functions_names_duplicated)]
-#[note]
-pub(crate) struct FunctionNamesDuplicated {
-    #[primary_span]
-    pub spans: Vec<Span>,
 }
 
 #[derive(Diagnostic)]
@@ -1259,6 +1201,16 @@ pub(crate) struct CoerceUnsizedNonStruct {
 }
 
 #[derive(Diagnostic)]
+#[diag(hir_analysis_coerce_same_pat_kind)]
+pub(crate) struct CoerceSamePatKind {
+    #[primary_span]
+    pub span: Span,
+    pub trait_name: &'static str,
+    pub pat_a: String,
+    pub pat_b: String,
+}
+
+#[derive(Diagnostic)]
 #[diag(hir_analysis_coerce_unsized_may, code = E0377)]
 pub(crate) struct CoerceSameStruct {
     #[primary_span]
@@ -1562,11 +1514,11 @@ pub(crate) struct UnconstrainedGenericParameter {
 #[diag(hir_analysis_opaque_captures_higher_ranked_lifetime, code = E0657)]
 pub(crate) struct OpaqueCapturesHigherRankedLifetime {
     #[primary_span]
-    pub span: Span,
+    pub span: MultiSpan,
     #[label]
     pub label: Option<Span>,
     #[note]
-    pub decl_span: Span,
+    pub decl_span: MultiSpan,
     pub bad_place: &'static str,
 }
 
@@ -1680,11 +1632,14 @@ pub(crate) enum SupertraitItemShadowee {
 }
 
 #[derive(Diagnostic)]
-#[diag(hir_analysis_self_in_type_alias, code = E0411)]
-pub(crate) struct SelfInTypeAlias {
+#[diag(hir_analysis_dyn_trait_assoc_item_binding_mentions_self)]
+pub(crate) struct DynTraitAssocItemBindingMentionsSelf {
     #[primary_span]
     #[label]
     pub span: Span,
+    pub kind: &'static str,
+    #[label(hir_analysis_binding_label)]
+    pub binding: Span,
 }
 
 #[derive(Diagnostic)]
@@ -1707,4 +1662,31 @@ pub(crate) struct AbiCustomClothedFunction {
 pub(crate) struct AsyncDropWithoutSyncDrop {
     #[primary_span]
     pub span: Span,
+}
+
+#[derive(Diagnostic)]
+#[diag(hir_analysis_lifetimes_or_bounds_mismatch_on_eii)]
+pub(crate) struct LifetimesOrBoundsMismatchOnEii {
+    #[primary_span]
+    #[label]
+    pub span: Span,
+    #[label(hir_analysis_generics_label)]
+    pub generics_span: Span,
+    #[label(hir_analysis_where_label)]
+    pub where_span: Option<Span>,
+    #[label(hir_analysis_bounds_label)]
+    pub bounds_span: Vec<Span>,
+    pub ident: Symbol,
+}
+
+#[derive(Diagnostic)]
+#[diag(hir_analysis_eii_with_generics)]
+#[help]
+pub(crate) struct EiiWithGenerics {
+    #[primary_span]
+    pub span: Span,
+    #[label]
+    pub attr: Span,
+    pub eii_name: Symbol,
+    pub impl_name: Symbol,
 }

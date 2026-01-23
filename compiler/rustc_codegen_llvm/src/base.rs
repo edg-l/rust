@@ -20,16 +20,17 @@ use rustc_codegen_ssa::traits::*;
 use rustc_data_structures::small_c_str::SmallCStr;
 use rustc_hir::attrs::Linkage;
 use rustc_middle::dep_graph;
-use rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrs;
+use rustc_middle::middle::codegen_fn_attrs::{CodegenFnAttrs, SanitizerFnAttrs};
 use rustc_middle::mir::mono::Visibility;
 use rustc_middle::ty::TyCtxt;
-use rustc_session::config::DebugInfo;
+use rustc_session::config::{DebugInfo, Offload};
 use rustc_span::Symbol;
 use rustc_target::spec::SanitizerSet;
 
 use super::ModuleLlvm;
 use crate::attributes;
 use crate::builder::Builder;
+use crate::builder::gpu_offload::OffloadGlobals;
 use crate::context::CodegenCx;
 use crate::llvm::{self, Value};
 
@@ -85,6 +86,24 @@ pub(crate) fn compile_codegen_unit(
         let llvm_module = ModuleLlvm::new(tcx, cgu_name.as_str());
         {
             let mut cx = CodegenCx::new(tcx, cgu, &llvm_module);
+
+            // Declare and store globals shared by all offload kernels
+            //
+            // These globals are left in the LLVM-IR host module so all kernels can access them.
+            // They are necessary for correct offload execution. We do this here to simplify the
+            // `offload` intrinsic, avoiding the need for tracking whether it's the first
+            // intrinsic call or not.
+            let has_host_offload = cx
+                .sess()
+                .opts
+                .unstable_opts
+                .offload
+                .iter()
+                .any(|o| matches!(o, Offload::Host(_) | Offload::Test));
+            if has_host_offload && !cx.sess().target.is_like_gpu {
+                cx.offload_globals.replace(Some(OffloadGlobals::declare(&cx)));
+            }
+
             let mono_items = cx.codegen_unit.items_in_deterministic_order(cx.tcx);
             for &(mono_item, data) in &mono_items {
                 mono_item.predefine::<Builder<'_, '_, '_>>(
@@ -105,7 +124,7 @@ pub(crate) fn compile_codegen_unit(
             if let Some(entry) =
                 maybe_create_entry_wrapper::<Builder<'_, '_, '_>>(&cx, cx.codegen_unit)
             {
-                let attrs = attributes::sanitize_attrs(&cx, tcx, SanitizerSet::empty());
+                let attrs = attributes::sanitize_attrs(&cx, tcx, SanitizerFnAttrs::default());
                 attributes::apply_to_llfn(entry, llvm::AttributePlace::Function, &attrs);
             }
 
@@ -191,10 +210,10 @@ pub(crate) fn visibility_to_llvm(linkage: Visibility) -> llvm::Visibility {
 }
 
 pub(crate) fn set_variable_sanitizer_attrs(llval: &Value, attrs: &CodegenFnAttrs) {
-    if attrs.no_sanitize.contains(SanitizerSet::ADDRESS) {
+    if attrs.sanitizers.disabled.contains(SanitizerSet::ADDRESS) {
         unsafe { llvm::LLVMRustSetNoSanitizeAddress(llval) };
     }
-    if attrs.no_sanitize.contains(SanitizerSet::HWADDRESS) {
+    if attrs.sanitizers.disabled.contains(SanitizerSet::HWADDRESS) {
         unsafe { llvm::LLVMRustSetNoSanitizeHWAddress(llval) };
     }
 }

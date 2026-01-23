@@ -14,18 +14,19 @@ use std::ops::ControlFlow;
 use rustc_data_structures::fx::{FxHashSet, FxIndexMap};
 use rustc_data_structures::unord::ExtendUnord;
 use rustc_errors::{E0720, ErrorGuaranteed};
+use rustc_hir::attrs::AttributeKind;
 use rustc_hir::def_id::LocalDefId;
 use rustc_hir::intravisit::{self, InferKind, Visitor};
-use rustc_hir::{self as hir, AmbigArg, HirId};
+use rustc_hir::{self as hir, AmbigArg, HirId, find_attr};
 use rustc_infer::traits::solve::Goal;
 use rustc_middle::traits::ObligationCause;
 use rustc_middle::ty::adjustment::{Adjust, Adjustment, PointerCoercion};
 use rustc_middle::ty::{
-    self, DefiningScopeKind, OpaqueHiddenType, Ty, TyCtxt, TypeFoldable, TypeFolder,
+    self, DefiningScopeKind, DefinitionSiteHiddenType, Ty, TyCtxt, TypeFoldable, TypeFolder,
     TypeSuperFoldable, TypeSuperVisitable, TypeVisitable, TypeVisitableExt, TypeVisitor,
     fold_regions,
 };
-use rustc_span::{Span, sym};
+use rustc_span::Span;
 use rustc_trait_selection::error_reporting::infer::need_type_info::TypeAnnotationNeeded;
 use rustc_trait_selection::opaque_types::opaque_type_has_defining_use_args;
 use rustc_trait_selection::solve;
@@ -45,8 +46,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         // This attribute causes us to dump some writeback information
         // in the form of errors, which is used for unit tests.
-        let rustc_dump_user_args =
-            self.has_rustc_attrs && self.tcx.has_attr(item_def_id, sym::rustc_dump_user_args);
+        let rustc_dump_user_args = self.has_rustc_attrs
+            && find_attr!(self.tcx.get_all_attrs(item_def_id), AttributeKind::RustcDumpUserArgs);
 
         let mut wbcx = WritebackCx::new(self, body, rustc_dump_user_args);
         for param in body.params {
@@ -78,9 +79,6 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         wbcx.visit_transmutes();
         wbcx.visit_offset_of_container_types();
         wbcx.visit_potentially_region_dependent_goals();
-
-        wbcx.typeck_results.rvalue_scopes =
-            mem::take(&mut self.typeck_results.borrow_mut().rvalue_scopes);
 
         let used_trait_imports =
             mem::take(&mut self.typeck_results.borrow_mut().used_trait_imports);
@@ -550,10 +548,6 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
     fn visit_opaque_types_next(&mut self) {
         let mut fcx_typeck_results = self.fcx.typeck_results.borrow_mut();
         assert_eq!(fcx_typeck_results.hir_owner, self.typeck_results.hir_owner);
-        for hidden_ty in fcx_typeck_results.hidden_types.values() {
-            assert!(!hidden_ty.has_infer());
-        }
-
         assert_eq!(self.typeck_results.hidden_types.len(), 0);
         self.typeck_results.hidden_types = mem::take(&mut fcx_typeck_results.hidden_types);
     }
@@ -589,7 +583,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
             ) {
                 self.typeck_results.hidden_types.insert(
                     opaque_type_key.def_id,
-                    ty::OpaqueHiddenType::new_error(tcx, err.report(self.fcx)),
+                    ty::DefinitionSiteHiddenType::new_error(tcx, err.report(self.fcx)),
                 );
             }
 
@@ -603,15 +597,16 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
                 self.typeck_results.hidden_types.insert(opaque_type_key.def_id, hidden_type)
             {
                 let entry =
-                    &mut self.typeck_results.hidden_types.get_mut(&opaque_type_key.def_id).unwrap();
+                    self.typeck_results.hidden_types.get_mut(&opaque_type_key.def_id).unwrap();
                 if prev.ty != hidden_type.ty {
-                    if let Some(guar) = self.typeck_results.tainted_by_errors {
-                        entry.ty = Ty::new_error(tcx, guar);
+                    let guar = if let Some(guar) = self.typeck_results.tainted_by_errors {
+                        guar
                     } else {
                         let (Ok(guar) | Err(guar)) =
                             prev.build_mismatch_error(&hidden_type, tcx).map(|d| d.emit());
-                        entry.ty = Ty::new_error(tcx, guar);
-                    }
+                        guar
+                    };
+                    *entry = DefinitionSiteHiddenType::new_error(tcx, guar);
                 }
 
                 // Pick a better span if there is one.
@@ -627,6 +622,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
             .filter(|&(&def_id, hidden_ty)| {
                 hidden_ty
                     .ty
+                    .instantiate_identity()
                     .visit_with(&mut HasRecursiveOpaque {
                         def_id,
                         seen: Default::default(),
@@ -646,7 +642,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
                 .emit();
             self.typeck_results
                 .hidden_types
-                .insert(def_id, OpaqueHiddenType { span, ty: Ty::new_error(tcx, guar) });
+                .insert(def_id, DefinitionSiteHiddenType::new_error(tcx, guar));
         }
     }
 
@@ -775,12 +771,13 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
         assert_eq!(fcx_typeck_results.hir_owner, self.typeck_results.hir_owner);
         let common_hir_owner = fcx_typeck_results.hir_owner;
 
-        for (local_id, &(container, ref indices)) in
-            fcx_typeck_results.offset_of_data().items_in_stable_order()
-        {
+        for (local_id, indices) in fcx_typeck_results.offset_of_data().items_in_stable_order() {
             let hir_id = HirId { owner: common_hir_owner, local_id };
-            let container = self.resolve(container, &hir_id);
-            self.typeck_results.offset_of_data_mut().insert(hir_id, (container, indices.clone()));
+            let indices = indices
+                .iter()
+                .map(|&(ty, variant, field)| (self.resolve(ty, &hir_id), variant, field))
+                .collect();
+            self.typeck_results.offset_of_data_mut().insert(hir_id, indices);
         }
     }
 
@@ -798,7 +795,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
                 } else {
                     let predicate = self.tcx().erase_and_anonymize_regions(predicate);
                     if cause.has_infer() || cause.has_placeholders() {
-                        // We can't use the the obligation cause as it references
+                        // We can't use the obligation cause as it references
                         // information local to this query.
                         cause = self.fcx.misc(cause.span);
                     }
@@ -1045,7 +1042,7 @@ impl<'tcx> TypeFolder<TyCtxt<'tcx>> for EagerlyNormalizeConsts<'tcx> {
 struct HasRecursiveOpaque<'a, 'tcx> {
     def_id: LocalDefId,
     seen: FxHashSet<LocalDefId>,
-    opaques: &'a FxIndexMap<LocalDefId, ty::OpaqueHiddenType<'tcx>>,
+    opaques: &'a FxIndexMap<LocalDefId, ty::DefinitionSiteHiddenType<'tcx>>,
     tcx: TyCtxt<'tcx>,
 }
 
@@ -1063,9 +1060,7 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for HasRecursiveOpaque<'_, 'tcx> {
             if self.seen.insert(def_id)
                 && let Some(hidden_ty) = self.opaques.get(&def_id)
             {
-                ty::EarlyBinder::bind(hidden_ty.ty)
-                    .instantiate(self.tcx, alias_ty.args)
-                    .visit_with(self)?;
+                hidden_ty.ty.instantiate(self.tcx, alias_ty.args).visit_with(self)?;
             }
         }
 

@@ -1,10 +1,10 @@
 use super::REDUNDANT_PATTERN_MATCHING;
 use clippy_utils::diagnostics::{span_lint_and_sugg, span_lint_and_then};
-use clippy_utils::source::walk_span_to_context;
+use clippy_utils::res::{MaybeDef, MaybeTypeckRes};
 use clippy_utils::sugg::{Sugg, make_unop};
-use clippy_utils::ty::{is_type_diagnostic_item, needs_ordered_drop};
+use clippy_utils::ty::needs_ordered_drop;
 use clippy_utils::visitors::{any_temporaries_need_ordered_drop, for_each_expr_without_closures};
-use clippy_utils::{higher, is_expn_of, is_trait_method, sym};
+use clippy_utils::{higher, is_expn_of, sym};
 use rustc_ast::ast::LitKind;
 use rustc_errors::Applicability;
 use rustc_hir::LangItem::{self, OptionNone, OptionSome, PollPending, PollReady, ResultErr, ResultOk};
@@ -24,7 +24,7 @@ pub(super) fn check<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) {
         ..
     }) = higher::WhileLet::hir(expr)
     {
-        find_method_sugg_for_if_let(cx, expr, let_pat, let_expr, "while", false);
+        find_method_sugg_for_if_let(cx, expr, let_pat, let_expr, "while", false, let_span);
         find_if_let_true(cx, let_pat, let_expr, let_span);
     }
 }
@@ -38,7 +38,7 @@ pub(super) fn check_if_let<'tcx>(
     let_span: Span,
 ) {
     find_if_let_true(cx, pat, scrutinee, let_span);
-    find_method_sugg_for_if_let(cx, expr, pat, scrutinee, "if", has_else);
+    find_method_sugg_for_if_let(cx, expr, pat, scrutinee, "if", has_else, let_span);
 }
 
 /// Looks for:
@@ -181,11 +181,12 @@ fn find_method_sugg_for_if_let<'tcx>(
     let_expr: &'tcx Expr<'_>,
     keyword: &'static str,
     has_else: bool,
+    let_span: Span,
 ) {
     // also look inside refs
     // if we have &None for example, peel it so we can detect "if let None = x"
     let check_pat = match let_pat.kind {
-        PatKind::Ref(inner, _mutability) => inner,
+        PatKind::Ref(inner, _pinnedness, _mutability) => inner,
         _ => let_pat,
     };
     let op_ty = cx.typeck_results().expr_ty(let_expr);
@@ -216,7 +217,7 @@ fn find_method_sugg_for_if_let<'tcx>(
     if keyword == "while"
         && let ExprKind::MethodCall(method_path, _, [], _) = let_expr.kind
         && method_path.ident.name == sym::next
-        && is_trait_method(cx, let_expr, sym::Iterator)
+        && cx.ty_based_def(let_expr).opt_parent(cx).is_diag_item(cx, sym::Iterator)
     {
         return;
     }
@@ -239,14 +240,8 @@ fn find_method_sugg_for_if_let<'tcx>(
             let ctxt = expr.span.ctxt();
 
             // if/while let ... = ... { ... }
-            //                    ^^^
-            let Some(res_span) = walk_span_to_context(result_expr.span.source_callsite(), ctxt) else {
-                return;
-            };
-
-            // if/while let ... = ... { ... }
             // ^^^^^^^^^^^^^^^^^^^^^^
-            let span = expr_span.until(res_span.shrink_to_hi());
+            let span = expr_span.until(let_span.shrink_to_hi());
 
             let mut app = if needs_drop {
                 Applicability::MaybeIncorrect
@@ -272,13 +267,14 @@ pub(super) fn check_match<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>, op
     if let Ok(arms) = arms.try_into() // TODO: use `slice::as_array` once stabilized
         && let Some((good_method, maybe_guard)) = found_good_method(cx, arms)
     {
-        let span = is_expn_of(expr.span, sym::matches).unwrap_or(expr.span.to(op.span));
+        let expr_span = is_expn_of(expr.span, sym::matches).unwrap_or(expr.span);
+
         let result_expr = match &op.kind {
             ExprKind::AddrOf(_, _, borrowed) => borrowed,
             _ => op,
         };
         let mut app = Applicability::MachineApplicable;
-        let receiver_sugg = Sugg::hir_with_applicability(cx, result_expr, "_", &mut app).maybe_paren();
+        let receiver_sugg = Sugg::hir_with_context(cx, result_expr, expr_span.ctxt(), "_", &mut app).maybe_paren();
         let mut sugg = format!("{receiver_sugg}.{good_method}");
 
         if let Some(guard) = maybe_guard {
@@ -301,14 +297,14 @@ pub(super) fn check_match<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>, op
                 return;
             }
 
-            let guard = Sugg::hir(cx, guard, "..");
+            let guard = Sugg::hir_with_context(cx, guard, expr_span.ctxt(), "..", &mut app);
             let _ = write!(sugg, " && {}", guard.maybe_paren());
         }
 
         span_lint_and_sugg(
             cx,
             REDUNDANT_PATTERN_MATCHING,
-            span,
+            expr_span,
             format!("redundant pattern matching, consider using `{good_method}`"),
             "try",
             sugg,
@@ -415,7 +411,7 @@ fn get_ident(path: &QPath<'_>) -> Option<rustc_span::symbol::Ident> {
             let name = path.segments[0].ident;
             Some(name)
         },
-        _ => None,
+        QPath::TypeRelative(..) => None,
     }
 }
 
@@ -460,7 +456,7 @@ fn is_pat_variant(cx: &LateContext<'_>, pat: &Pat<'_>, path: &QPath<'_>, expecte
         Item::Diag(expected_ty, expected_variant) => {
             let ty = cx.typeck_results().pat_ty(pat);
 
-            if is_type_diagnostic_item(cx, ty, expected_ty) {
+            if ty.is_diag_item(cx, expected_ty) {
                 let variant = ty
                     .ty_adt_def()
                     .expect("struct pattern type is not an ADT")

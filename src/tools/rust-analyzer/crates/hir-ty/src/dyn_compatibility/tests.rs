@@ -35,7 +35,7 @@ fn check_dyn_compatibility<'a>(
     for (trait_id, name) in file_ids.into_iter().flat_map(|file_id| {
         let module_id = db.module_for_file(file_id.file_id(&db));
         let def_map = module_id.def_map(&db);
-        let scope = &def_map[module_id.local_id].scope;
+        let scope = &def_map[module_id].scope;
         scope
             .declarations()
             .filter_map(|def| {
@@ -57,7 +57,7 @@ fn check_dyn_compatibility<'a>(
         };
         let mut osvs = FxHashSet::default();
         let db = &db;
-        salsa::attach(db, || {
+        crate::attach_db(db, || {
             _ = dyn_compatibility_with_callback(db, trait_id, &mut |osv| {
                 osvs.insert(match osv {
                     DynCompatibilityViolation::SizedSelf => SizedSelf,

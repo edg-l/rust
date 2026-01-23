@@ -184,7 +184,13 @@ impl<'tcx> ReachableContext<'tcx> {
                 CodegenFnAttrs::EMPTY
             };
             let is_extern = codegen_attrs.contains_extern_indicator();
-            if is_extern {
+            // Right now, the only way to get "foreign item symbol aliases" is by being an EII-implementation.
+            // EII implementations will generate under their own name but also under the name of some foreign item
+            // (hence alias) that may be in another crate. These functions are marked as always-reachable since
+            // it's very hard to track whether the original foreign item was reachable. It may live in another crate
+            // and may be reachable from sibling crates.
+            let has_foreign_aliases_eii = !codegen_attrs.foreign_item_symbol_aliases.is_empty();
+            if is_extern || has_foreign_aliases_eii {
                 self.reachable_symbols.insert(search_item);
             }
         } else {
@@ -203,7 +209,10 @@ impl<'tcx> ReachableContext<'tcx> {
                             self.visit_nested_body(body);
                         }
                     }
-
+                    // For #[type_const] we want to evaluate the RHS.
+                    hir::ItemKind::Const(_, _, _, init @ hir::ConstItemRhs::TypeConst(_)) => {
+                        self.visit_const_item_rhs(init);
+                    }
                     hir::ItemKind::Const(_, _, _, init) => {
                         // Only things actually ending up in the final constant value are reachable
                         // for codegen. Everything else is only needed during const-eval, so even if
@@ -217,7 +226,7 @@ impl<'tcx> ReachableContext<'tcx> {
                             // We can't figure out which value the constant will evaluate to. In
                             // lieu of that, we have to consider everything mentioned in the const
                             // initializer reachable, since it *may* end up in the final value.
-                            Err(ErrorHandled::TooGeneric(_)) => self.visit_nested_body(init),
+                            Err(ErrorHandled::TooGeneric(_)) => self.visit_const_item_rhs(init),
                             // If there was an error evaluating the const, nothing can be reachable
                             // via it, and anyway compilation will fail.
                             Err(ErrorHandled::Reported(..)) => {}
@@ -253,16 +262,16 @@ impl<'tcx> ReachableContext<'tcx> {
                     | hir::TraitItemKind::Fn(_, hir::TraitFn::Required(_)) => {
                         // Keep going, nothing to get exported
                     }
-                    hir::TraitItemKind::Const(_, Some(body_id))
-                    | hir::TraitItemKind::Fn(_, hir::TraitFn::Provided(body_id)) => {
+                    hir::TraitItemKind::Const(_, Some(rhs)) => self.visit_const_item_rhs(rhs),
+                    hir::TraitItemKind::Fn(_, hir::TraitFn::Provided(body_id)) => {
                         self.visit_nested_body(body_id);
                     }
                     hir::TraitItemKind::Type(..) => {}
                 }
             }
             Node::ImplItem(impl_item) => match impl_item.kind {
-                hir::ImplItemKind::Const(_, body) => {
-                    self.visit_nested_body(body);
+                hir::ImplItemKind::Const(_, rhs) => {
+                    self.visit_const_item_rhs(rhs);
                 }
                 hir::ImplItemKind::Fn(_, body) => {
                     if recursively_reachable(self.tcx, impl_item.hir_id().owner.to_def_id()) {
@@ -404,9 +413,7 @@ fn check_item<'tcx>(
     let items = tcx.associated_item_def_ids(id.owner_id);
     worklist.extend(items.iter().map(|ii_ref| ii_ref.expect_local()));
 
-    let Some(trait_def_id) = tcx.trait_id_of_impl(id.owner_id.to_def_id()) else {
-        unreachable!();
-    };
+    let trait_def_id = tcx.impl_trait_id(id.owner_id.to_def_id());
 
     if !trait_def_id.is_local() {
         return;
@@ -431,6 +438,12 @@ fn has_custom_linkage(tcx: TyCtxt<'_>, def_id: LocalDefId) -> bool {
         // `SymbolExportLevel::Rust` export level but may end up being exported in dylibs.
         || codegen_attrs.flags.contains(CodegenFnAttrFlags::USED_COMPILER)
         || codegen_attrs.flags.contains(CodegenFnAttrFlags::USED_LINKER)
+        // Right now, the only way to get "foreign item symbol aliases" is by being an EII-implementation.
+        // EII implementations will generate under their own name but also under the name of some foreign item
+        // (hence alias) that may be in another crate. These functions are marked as always-reachable since
+        // it's very hard to track whether the original foreign item was reachable. It may live in another crate
+        // and may be reachable from sibling crates.
+        || !codegen_attrs.foreign_item_symbol_aliases.is_empty()
 }
 
 /// See module-level doc comment above.

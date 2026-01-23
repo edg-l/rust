@@ -36,13 +36,11 @@ pub mod consts {
 
     /// The golden ratio (φ)
     #[unstable(feature = "f16", issue = "116909")]
-    // Also, #[unstable(feature = "more_float_constants", issue = "146939")]
-    pub const PHI: f16 = 1.618033988749894848204586834365638118_f16;
+    pub const GOLDEN_RATIO: f16 = 1.618033988749894848204586834365638118_f16;
 
     /// The Euler-Mascheroni constant (γ)
     #[unstable(feature = "f16", issue = "116909")]
-    // Also, #[unstable(feature = "more_float_constants", issue = "146939")]
-    pub const EGAMMA: f16 = 0.577215664901532860606512090082402431_f16;
+    pub const EULER_GAMMA: f16 = 0.577215664901532860606512090082402431_f16;
 
     /// π/2
     #[unstable(feature = "f16", issue = "116909")]
@@ -134,6 +132,7 @@ pub mod consts {
     pub const LN_10: f16 = 2.30258509299404568401799145468436421_f16;
 }
 
+#[doc(test(attr(feature(cfg_target_has_reliable_f16_f128), allow(internal_features))))]
 impl f16 {
     // FIXME(f16_f128): almost all methods in this `impl` are missing examples and a const
     // implementation. Add these once we can run code on all platforms and have f16/f128 in CTFE.
@@ -274,7 +273,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let nan = f16::NAN;
     /// let f = 7.0_f16;
@@ -296,7 +295,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let f = 7.0f16;
     /// let inf = f16::INFINITY;
@@ -321,7 +320,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let f = 7.0f16;
     /// let inf: f16 = f16::INFINITY;
@@ -349,7 +348,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let min = f16::MIN_POSITIVE; // 6.1035e-5
     /// let max = f16::MAX;
@@ -378,7 +377,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let min = f16::MIN_POSITIVE; // 6.1035e-5
     /// let max = f16::MAX;
@@ -409,7 +408,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// use std::num::FpCategory;
     ///
@@ -445,8 +444,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # // FIXME(f16_f128): LLVM crashes on s390x, llvm/llvm-project#50374
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let f = 7.0_f16;
     /// let g = -7.0_f16;
@@ -474,8 +472,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # // FIXME(f16_f128): LLVM crashes on s390x, llvm/llvm-project#50374
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let f = 7.0_f16;
     /// let g = -7.0_f16;
@@ -509,8 +506,7 @@ impl f16 {
     ///
     /// ```rust
     /// #![feature(f16)]
-    /// # // FIXME(f16_f128): ABI issues on MSVC
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// // f16::EPSILON is the difference between 1.0 and the next number up.
     /// assert_eq!(1.0f16.next_up(), 1.0 + f16::EPSILON);
@@ -564,8 +560,7 @@ impl f16 {
     ///
     /// ```rust
     /// #![feature(f16)]
-    /// # // FIXME(f16_f128): ABI issues on MSVC
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let x = 1.0f16;
     /// // Clamp value into range [0, 1).
@@ -608,8 +603,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # // FIXME(f16_f128): extendhfsf2, truncsfhf2, __gnu_h2f_ieee, __gnu_f2h_ieee missing for many platforms
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let x = 2.0_f16;
     /// let abs_difference = (x.recip() - (1.0 / x)).abs();
@@ -635,8 +629,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # // FIXME(f16_f128): extendhfsf2, truncsfhf2, __gnu_h2f_ieee, __gnu_f2h_ieee missing for many platforms
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let angle = std::f16::consts::PI;
     ///
@@ -665,8 +658,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # // FIXME(f16_f128): extendhfsf2, truncsfhf2, __gnu_h2f_ieee, __gnu_f2h_ieee missing for many platforms
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let angle = 180.0f16;
     ///
@@ -687,20 +679,25 @@ impl f16 {
 
     /// Returns the maximum of the two numbers, ignoring NaN.
     ///
-    /// If one of the arguments is NaN, then the other argument is returned.
-    /// This follows the IEEE 754-2008 semantics for maxNum, except for handling of signaling NaNs;
-    /// this function handles all NaNs the same way and avoids maxNum's problems with associativity.
-    /// This also matches the behavior of libm’s fmax. In particular, if the inputs compare equal
-    /// (such as for the case of `+0.0` and `-0.0`), either input may be returned non-deterministically.
+    /// If exactly one of the arguments is NaN (quiet or signaling), then the other argument is
+    /// returned. If both arguments are NaN, the return value is NaN, with the bit pattern picked
+    /// using the usual [rules for arithmetic operations](f32#nan-bit-patterns). If the inputs
+    /// compare equal (such as for the case of `+0.0` and `-0.0`), either input may be returned
+    /// non-deterministically.
+    ///
+    /// The handling of NaNs follows the IEEE 754-2019 semantics for `maximumNumber`, treating all
+    /// NaNs the same way to ensure the operation is associative. The handling of signed zeros
+    /// follows the IEEE 754-2008 semantics for `maxNum`.
     ///
     /// ```
     /// #![feature(f16)]
-    /// # #[cfg(target_arch = "aarch64")] { // FIXME(f16_F128): rust-lang/rust#123885
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let x = 1.0f16;
     /// let y = 2.0f16;
     ///
     /// assert_eq!(x.max(y), y);
+    /// assert_eq!(x.max(f16::NAN), x);
     /// # }
     /// ```
     #[inline]
@@ -713,20 +710,25 @@ impl f16 {
 
     /// Returns the minimum of the two numbers, ignoring NaN.
     ///
-    /// If one of the arguments is NaN, then the other argument is returned.
-    /// This follows the IEEE 754-2008 semantics for minNum, except for handling of signaling NaNs;
-    /// this function handles all NaNs the same way and avoids minNum's problems with associativity.
-    /// This also matches the behavior of libm’s fmin. In particular, if the inputs compare equal
-    /// (such as for the case of `+0.0` and `-0.0`), either input may be returned non-deterministically.
+    /// If exactly one of the arguments is NaN (quiet or signaling), then the other argument is
+    /// returned. If both arguments are NaN, the return value is NaN, with the bit pattern picked
+    /// using the usual [rules for arithmetic operations](f32#nan-bit-patterns). If the inputs
+    /// compare equal (such as for the case of `+0.0` and `-0.0`), either input may be returned
+    /// non-deterministically.
+    ///
+    /// The handling of NaNs follows the IEEE 754-2019 semantics for `minimumNumber`, treating all
+    /// NaNs the same way to ensure the operation is associative. The handling of signed zeros
+    /// follows the IEEE 754-2008 semantics for `minNum`.
     ///
     /// ```
     /// #![feature(f16)]
-    /// # #[cfg(target_arch = "aarch64")] { // FIXME(f16_F128): rust-lang/rust#123885
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let x = 1.0f16;
     /// let y = 2.0f16;
     ///
     /// assert_eq!(x.min(y), x);
+    /// assert_eq!(x.min(f16::NAN), x);
     /// # }
     /// ```
     #[inline]
@@ -739,13 +741,20 @@ impl f16 {
 
     /// Returns the maximum of the two numbers, propagating NaN.
     ///
-    /// This returns NaN when *either* argument is NaN, as opposed to
-    /// [`f16::max`] which only returns NaN when *both* arguments are NaN.
+    /// If at least one of the arguments is NaN, the return value is NaN, with the bit pattern
+    /// picked using the usual [rules for arithmetic operations](f32#nan-bit-patterns). Furthermore,
+    /// `-0.0` is considered to be less than `+0.0`, making this function fully deterministic for
+    /// non-NaN inputs.
+    ///
+    /// This is in contrast to [`f16::max`] which only returns NaN when *both* arguments are NaN,
+    /// and which does not reliably order `-0.0` and `+0.0`.
+    ///
+    /// This follows the IEEE 754-2019 semantics for `maximum`.
     ///
     /// ```
     /// #![feature(f16)]
     /// #![feature(float_minimum_maximum)]
-    /// # #[cfg(target_arch = "aarch64")] { // FIXME(f16_F128): rust-lang/rust#123885
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let x = 1.0f16;
     /// let y = 2.0f16;
@@ -754,13 +763,6 @@ impl f16 {
     /// assert!(x.maximum(f16::NAN).is_nan());
     /// # }
     /// ```
-    ///
-    /// If one of the arguments is NaN, then NaN is returned. Otherwise this returns the greater
-    /// of the two numbers. For this operation, -0.0 is considered to be less than +0.0.
-    /// Note that this follows the semantics specified in IEEE 754-2019.
-    ///
-    /// Also note that "propagation" of NaNs here doesn't necessarily mean that the bitpattern of a NaN
-    /// operand is conserved; see the [specification of NaN bit patterns](f32#nan-bit-patterns) for more info.
     #[inline]
     #[unstable(feature = "f16", issue = "116909")]
     // #[unstable(feature = "float_minimum_maximum", issue = "91079")]
@@ -771,13 +773,20 @@ impl f16 {
 
     /// Returns the minimum of the two numbers, propagating NaN.
     ///
-    /// This returns NaN when *either* argument is NaN, as opposed to
-    /// [`f16::min`] which only returns NaN when *both* arguments are NaN.
+    /// If at least one of the arguments is NaN, the return value is NaN, with the bit pattern
+    /// picked using the usual [rules for arithmetic operations](f32#nan-bit-patterns). Furthermore,
+    /// `-0.0` is considered to be less than `+0.0`, making this function fully deterministic for
+    /// non-NaN inputs.
+    ///
+    /// This is in contrast to [`f16::min`] which only returns NaN when *both* arguments are NaN,
+    /// and which does not reliably order `-0.0` and `+0.0`.
+    ///
+    /// This follows the IEEE 754-2019 semantics for `minimum`.
     ///
     /// ```
     /// #![feature(f16)]
     /// #![feature(float_minimum_maximum)]
-    /// # #[cfg(target_arch = "aarch64")] { // FIXME(f16_F128): rust-lang/rust#123885
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let x = 1.0f16;
     /// let y = 2.0f16;
@@ -786,13 +795,6 @@ impl f16 {
     /// assert!(x.minimum(f16::NAN).is_nan());
     /// # }
     /// ```
-    ///
-    /// If one of the arguments is NaN, then NaN is returned. Otherwise this returns the lesser
-    /// of the two numbers. For this operation, -0.0 is considered to be less than +0.0.
-    /// Note that this follows the semantics specified in IEEE 754-2019.
-    ///
-    /// Also note that "propagation" of NaNs here doesn't necessarily mean that the bitpattern of a NaN
-    /// operand is conserved; see the [specification of NaN bit patterns](f32#nan-bit-patterns) for more info.
     #[inline]
     #[unstable(feature = "f16", issue = "116909")]
     // #[unstable(feature = "float_minimum_maximum", issue = "91079")]
@@ -810,7 +812,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # #[cfg(target_arch = "aarch64")] { // FIXME(f16_F128): rust-lang/rust#123885
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// assert_eq!(1f16.midpoint(4.0), 2.5);
     /// assert_eq!((-5.5f16).midpoint(8.0), 1.25);
@@ -840,7 +842,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let value = 4.6_f16;
     /// let rounded = unsafe { value.to_int_unchecked::<u16>() };
@@ -883,7 +885,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// # // FIXME(f16_f128): enable this once const casting works
     /// # // assert_ne!((1f16).to_bits(), 1f16 as u128); // to_bits() is not casting!
@@ -931,7 +933,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let v = f16::from_bits(0x4a40);
     /// assert_eq!(v, 12.5);
@@ -957,8 +959,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # // FIXME(f16_f128): LLVM crashes on s390x, llvm/llvm-project#50374
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let bytes = 12.5f16.to_be_bytes();
     /// assert_eq!(bytes, [0x4a, 0x40]);
@@ -981,8 +982,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # // FIXME(f16_f128): LLVM crashes on s390x, llvm/llvm-project#50374
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let bytes = 12.5f16.to_le_bytes();
     /// assert_eq!(bytes, [0x40, 0x4a]);
@@ -1011,8 +1011,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # // FIXME(f16_f128): LLVM crashes on s390x, llvm/llvm-project#50374
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let bytes = 12.5f16.to_ne_bytes();
     /// assert_eq!(
@@ -1041,7 +1040,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let value = f16::from_be_bytes([0x4a, 0x40]);
     /// assert_eq!(value, 12.5);
@@ -1063,7 +1062,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let value = f16::from_le_bytes([0x40, 0x4a]);
     /// assert_eq!(value, 12.5);
@@ -1092,7 +1091,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let value = f16::from_ne_bytes(if cfg!(target_endian = "big") {
     ///     [0x4a, 0x40]
@@ -1142,8 +1141,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # // FIXME(f16_f128): extendhfsf2, truncsfhf2, __gnu_h2f_ieee, __gnu_f2h_ieee missing for many platforms
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// struct GoodBoy {
     ///     name: &'static str,
@@ -1215,7 +1213,8 @@ impl f16 {
     /// less than `min`. Otherwise this returns `self`.
     ///
     /// Note that this function returns NaN if the initial value was NaN as
-    /// well.
+    /// well. If the result is zero and among the three inputs `self`, `min`, and `max` there are
+    /// zeros with different sign, either `0.0` or `-0.0` is returned non-deterministically.
     ///
     /// # Panics
     ///
@@ -1225,12 +1224,18 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// assert!((-3.0f16).clamp(-2.0, 1.0) == -2.0);
     /// assert!((0.0f16).clamp(-2.0, 1.0) == 0.0);
     /// assert!((2.0f16).clamp(-2.0, 1.0) == 1.0);
     /// assert!((f16::NAN).clamp(-2.0, 1.0).is_nan());
+    ///
+    /// // These always returns zero, but the sign (which is ignored by `==`) is non-deterministic.
+    /// assert!((0.0f16).clamp(-0.0, -0.0) == 0.0);
+    /// assert!((1.0f16).clamp(-0.0, 0.0) == 0.0);
+    /// // This is definitely a negative zero.
+    /// assert!((-1.0f16).clamp(-0.0, 1.0).is_sign_negative());
     /// # }
     /// ```
     #[inline]
@@ -1254,6 +1259,38 @@ impl f16 {
         self
     }
 
+    /// Clamps this number to a symmetric range centered around zero.
+    ///
+    /// The method clamps the number's magnitude (absolute value) to be at most `limit`.
+    ///
+    /// This is functionally equivalent to `self.clamp(-limit, limit)`, but is more
+    /// explicit about the intent.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `limit` is negative or NaN, as this indicates a logic error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(f16)]
+    /// #![feature(clamp_magnitude)]
+    /// # #[cfg(target_has_reliable_f16)] {
+    /// assert_eq!(5.0f16.clamp_magnitude(3.0), 3.0);
+    /// assert_eq!((-5.0f16).clamp_magnitude(3.0), -3.0);
+    /// assert_eq!(2.0f16.clamp_magnitude(3.0), 2.0);
+    /// assert_eq!((-2.0f16).clamp_magnitude(3.0), -2.0);
+    /// # }
+    /// ```
+    #[inline]
+    #[unstable(feature = "clamp_magnitude", issue = "148519")]
+    #[must_use = "this returns the clamped value and does not modify the original"]
+    pub fn clamp_magnitude(self, limit: f16) -> f16 {
+        assert!(limit >= 0.0, "limit must be non-negative");
+        let limit = limit.abs(); // Canonicalises -0.0 to 0.0
+        self.clamp(-limit, limit)
+    }
+
     /// Computes the absolute value of `self`.
     ///
     /// This function always returns the precise result.
@@ -1262,7 +1299,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16_math)] {
     ///
     /// let x = 3.5_f16;
     /// let y = -3.5_f16;
@@ -1278,8 +1315,7 @@ impl f16 {
     #[rustc_const_unstable(feature = "f16", issue = "116909")]
     #[must_use = "method returns a new number and does not mutate the original value"]
     pub const fn abs(self) -> Self {
-        // FIXME(f16_f128): replace with `intrinsics::fabsf16` when available
-        Self::from_bits(self.to_bits() & !(1 << 15))
+        intrinsics::fabsf16(self)
     }
 
     /// Returns a number that represents the sign of `self`.
@@ -1292,7 +1328,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let f = 3.5_f16;
     ///
@@ -1328,7 +1364,7 @@ impl f16 {
     ///
     /// ```
     /// #![feature(f16)]
-    /// # #[cfg(all(target_arch = "x86_64", target_os = "linux"))] {
+    /// # #[cfg(target_has_reliable_f16_math)] {
     ///
     /// let f = 3.5_f16;
     ///
@@ -1418,7 +1454,7 @@ impl f16 {
     /// ```
     /// #![feature(f16)]
     /// # #[cfg(not(miri))]
-    /// # #[cfg(target_has_reliable_f16_math)] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let f = 3.7_f16;
     /// let g = 3.0_f16;
@@ -1447,7 +1483,7 @@ impl f16 {
     /// ```
     /// #![feature(f16)]
     /// # #[cfg(not(miri))]
-    /// # #[cfg(target_has_reliable_f16_math)] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let f = 3.01_f16;
     /// let g = 4.0_f16;
@@ -1476,7 +1512,7 @@ impl f16 {
     /// ```
     /// #![feature(f16)]
     /// # #[cfg(not(miri))]
-    /// # #[cfg(target_has_reliable_f16_math)] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let f = 3.3_f16;
     /// let g = -3.3_f16;
@@ -1510,7 +1546,7 @@ impl f16 {
     /// ```
     /// #![feature(f16)]
     /// # #[cfg(not(miri))]
-    /// # #[cfg(target_has_reliable_f16_math)] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let f = 3.3_f16;
     /// let g = -3.3_f16;
@@ -1542,7 +1578,7 @@ impl f16 {
     /// ```
     /// #![feature(f16)]
     /// # #[cfg(not(miri))]
-    /// # #[cfg(target_has_reliable_f16_math)] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let f = 3.7_f16;
     /// let g = 3.0_f16;
@@ -1572,7 +1608,7 @@ impl f16 {
     /// ```
     /// #![feature(f16)]
     /// # #[cfg(not(miri))]
-    /// # #[cfg(target_has_reliable_f16_math)] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let x = 3.6_f16;
     /// let y = -3.6_f16;
@@ -1611,7 +1647,7 @@ impl f16 {
     /// ```
     /// #![feature(f16)]
     /// # #[cfg(not(miri))]
-    /// # #[cfg(target_has_reliable_f16_math)] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let m = 10.0_f16;
     /// let x = 4.0_f16;
@@ -1635,7 +1671,6 @@ impl f16 {
     #[unstable(feature = "f16", issue = "116909")]
     #[doc(alias = "fmaf16", alias = "fusedMultiplyAdd")]
     #[must_use = "method returns a new number and does not mutate the original value"]
-    #[rustc_const_unstable(feature = "const_mul_add", issue = "146724")]
     pub const fn mul_add(self, a: f16, b: f16) -> f16 {
         intrinsics::fmaf16(self, a, b)
     }
@@ -1657,7 +1692,7 @@ impl f16 {
     /// ```
     /// #![feature(f16)]
     /// # #[cfg(not(miri))]
-    /// # #[cfg(target_has_reliable_f16_math)] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let a: f16 = 7.0;
     /// let b = 4.0;
@@ -1679,7 +1714,8 @@ impl f16 {
         q
     }
 
-    /// Calculates the least nonnegative remainder of `self (mod rhs)`.
+    /// Calculates the least nonnegative remainder of `self` when
+    /// divided by `rhs`.
     ///
     /// In particular, the return value `r` satisfies `0.0 <= r < rhs.abs()` in
     /// most cases. However, due to a floating point round-off error it can
@@ -1700,7 +1736,7 @@ impl f16 {
     /// ```
     /// #![feature(f16)]
     /// # #[cfg(not(miri))]
-    /// # #[cfg(target_has_reliable_f16_math)] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let a: f16 = 7.0;
     /// let b = 4.0;
@@ -1728,6 +1764,11 @@ impl f16 {
     /// It might have a different sequence of rounding operations than `powf`,
     /// so the results are not guaranteed to agree.
     ///
+    /// Note that this function is special in that it can return non-NaN results for NaN inputs. For
+    /// example, `f16::powi(f16::NAN, 0)` returns `1.0`. However, if an input is a *signaling*
+    /// NaN, then the result is non-deterministically either a NaN or the result that the
+    /// corresponding quiet NaN would produce.
+    ///
     /// # Unspecified precision
     ///
     /// The precision of this function is non-deterministic. This means it varies by platform,
@@ -1738,13 +1779,14 @@ impl f16 {
     /// ```
     /// #![feature(f16)]
     /// # #[cfg(not(miri))]
-    /// # #[cfg(target_has_reliable_f16_math)] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let x = 2.0_f16;
     /// let abs_difference = (x.powi(2) - (x * x)).abs();
     /// assert!(abs_difference <= f16::EPSILON);
     ///
     /// assert_eq!(f16::powi(f16::NAN, 0), 1.0);
+    /// assert_eq!(f16::powi(0.0, 0), 1.0);
     /// # }
     /// ```
     #[inline]
@@ -1770,7 +1812,7 @@ impl f16 {
     /// ```
     /// #![feature(f16)]
     /// # #[cfg(not(miri))]
-    /// # #[cfg(target_has_reliable_f16_math)] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let positive = 4.0_f16;
     /// let negative = -4.0_f16;
@@ -1805,7 +1847,7 @@ impl f16 {
     /// ```
     /// #![feature(f16)]
     /// # #[cfg(not(miri))]
-    /// # #[cfg(target_has_reliable_f16_math)] {
+    /// # #[cfg(target_has_reliable_f16)] {
     ///
     /// let x = 8.0f16;
     ///

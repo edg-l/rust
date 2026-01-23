@@ -1,4 +1,3 @@
-use base_db::salsa;
 use expect_test::{Expect, expect};
 use hir::HirDisplay;
 
@@ -11,12 +10,12 @@ fn check_expected_type_and_name(#[rust_analyzer::rust_fixture] ra_fixture: &str,
     let (db, pos) = position(ra_fixture);
     let config = TEST_CONFIG;
     let (completion_context, _analysis) =
-        salsa::attach(&db, || CompletionContext::new(&db, pos, &config).unwrap());
+        hir::attach_db(&db, || CompletionContext::new(&db, pos, &config, None).unwrap());
 
     let ty = completion_context
         .expected_type
         .map(|t| {
-            salsa::attach(&db, || {
+            hir::attach_db(&db, || {
                 t.display_test(&db, completion_context.krate.to_display_target(&db)).to_string()
             })
         })
@@ -91,6 +90,20 @@ fn bar(x: u32) {}
 "#,
         expect![[r#"ty: u32, name: x"#]],
     );
+    check_expected_type_and_name(
+        r#"
+fn foo() { bar(, $0); }
+fn bar(x: u32, y: i32) {}
+"#,
+        expect![[r#"ty: i32, name: y"#]],
+    );
+    check_expected_type_and_name(
+        r#"
+fn foo() { bar(, c$0); }
+fn bar(x: u32, y: i32) {}
+"#,
+        expect![[r#"ty: i32, name: y"#]],
+    );
 }
 
 #[test]
@@ -130,6 +143,18 @@ fn foo() { bar(&c$0); }
 fn bar(x: &u32) {}
         "#,
         expect![[r#"ty: u32, name: x"#]],
+    );
+}
+
+#[test]
+fn expected_type_fn_param_deref() {
+    cov_mark::check!(expected_type_fn_param_deref);
+    check_expected_type_and_name(
+        r#"
+fn foo() { bar(*$0); }
+fn bar(x: &u32) {}
+"#,
+        expect!["ty: &'_ &'_ u32, name: x"],
     );
 }
 
@@ -225,6 +250,22 @@ struct Foo;
 enum E { X }
 fn foo() -> Foo {
    match E::X { E::X => $0 }
+}
+"#,
+        expect![[r#"ty: Foo, name: ?"#]],
+    );
+}
+
+#[test]
+fn expected_type_match_arm_block_body_without_leading_char() {
+    cov_mark::check!(expected_type_match_arm_body_without_leading_char);
+    cov_mark::check!(expected_type_match_arm_body_with_leading_char);
+    check_expected_type_and_name(
+        r#"
+struct Foo;
+enum E { X }
+fn foo() -> Foo {
+    match E::X { Foo::X => { $0 } }
 }
 "#,
         expect![[r#"ty: Foo, name: ?"#]],
@@ -374,12 +415,23 @@ fn foo() -> u32 {
 
 #[test]
 fn expected_type_closure_param_return() {
-    // FIXME: make this work with `|| $0`
     check_expected_type_and_name(
         r#"
 //- minicore: fn
 fn foo() {
     bar(|| a$0);
+}
+
+fn bar(f: impl FnOnce() -> u32) {}
+"#,
+        expect![[r#"ty: u32, name: ?"#]],
+    );
+
+    check_expected_type_and_name(
+        r#"
+//- minicore: fn
+fn foo() {
+    bar(|| $0);
 }
 
 fn bar(f: impl FnOnce() -> u32) {}
@@ -575,6 +627,125 @@ fn foo() {
             8
         } else {
             return $0;
+        };
+    };
+}
+"#,
+        expect![[r#"ty: State, name: ?"#]],
+    );
+}
+
+#[test]
+fn expected_type_break_expr_in_loop() {
+    check_expected_type_and_name(
+        r#"
+enum State { Stop }
+fn foo() {
+    let _x: State = loop {
+        {
+            break State::Stop;
+            break $0;
+        }
+    };
+}
+"#,
+        expect![[r#"ty: State, name: ?"#]],
+    );
+
+    check_expected_type_and_name(
+        r#"
+enum State { Stop }
+fn foo() {
+    let _x: State = 'a: loop {
+        {
+            break State::Stop;
+            break $0;
+        }
+    };
+}
+"#,
+        expect![[r#"ty: State, name: ?"#]],
+    );
+
+    check_expected_type_and_name(
+        r#"
+enum State { Stop }
+fn foo() {
+    let _x: State = 'a: loop {
+        while true {
+            break $0;
+        }
+    };
+}
+"#,
+        expect![[r#"ty: (), name: ?"#]],
+    );
+}
+
+#[test]
+fn expected_type_break_expr_in_labeled_loop() {
+    check_expected_type_and_name(
+        r#"
+enum State { Stop }
+fn foo() {
+    let _x: State = 'a: loop {
+        let _y: i32 = loop {
+            {
+                break 'a State::Stop;
+                break 'a $0;
+            }
+        };
+    };
+}
+"#,
+        expect![[r#"ty: State, name: ?"#]],
+    );
+
+    check_expected_type_and_name(
+        r#"
+enum State { Stop }
+fn foo() {
+    let _x: State = 'a: loop {
+        let _y: i32 = loop {
+            while true {
+                break 'a State::Stop;
+                break 'a $0;
+            }
+        };
+    };
+}
+"#,
+        expect![[r#"ty: State, name: ?"#]],
+    );
+
+    check_expected_type_and_name(
+        r#"
+enum State { Stop }
+fn foo() {
+    'a: while true {
+        let _x: State = loop {
+            break State::Stop;
+            break 'a $0;
+        };
+    }
+}
+"#,
+        expect![[r#"ty: (), name: ?"#]],
+    );
+}
+
+#[test]
+fn expected_type_break_expr_in_labeled_block() {
+    check_expected_type_and_name(
+        r#"
+enum State { Stop }
+fn foo() {
+    let _x: State = 'a: {
+        let _y: i32 = 'b: {
+            {
+                break 'a State::Stop;
+                break 'a $0;
+            };
         };
     };
 }

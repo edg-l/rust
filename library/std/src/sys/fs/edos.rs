@@ -6,6 +6,8 @@ use alloc_crate::ffi::CString;
 use edos_rt::fd::{FstatEntry, OpenFlags};
 use edos_rt::fs::{sys_mkdir, sys_rmdir, sys_rmdir_all};
 
+pub use crate::sys::fs::common::Dir;
+
 use crate::ffi::OsString;
 use crate::fmt;
 use crate::fs::TryLockError;
@@ -330,6 +332,14 @@ pub fn symlink(_original: &Path, _link: &Path) -> io::Result<()> {
 }
 
 pub fn link(_src: &Path, _dst: &Path) -> io::Result<()> {
+    unsupported()
+}
+
+pub fn set_times(_p: &Path, _times: FileTimes) -> io::Result<()> {
+    unsupported()
+}
+
+pub fn set_times_nofollow(_p: &Path, _times: FileTimes) -> io::Result<()> {
     unsupported()
 }
 

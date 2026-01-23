@@ -1,63 +1,119 @@
 //! Post-inference closure analysis: captures and closure kind.
 
-use std::{cmp, convert::Infallible, mem};
+use std::{cmp, mem};
 
-use chalk_ir::{
-    BoundVar, DebruijnIndex, Mutability, TyKind,
-    fold::{FallibleTypeFolder, TypeFoldable},
-};
-use either::Either;
+use base_db::Crate;
 use hir_def::{
-    DefWithBodyId, FieldId, HasModule, TupleFieldId, TupleId, VariantId,
+    DefWithBodyId, FieldId, HasModule, VariantId,
     expr_store::path::Path,
     hir::{
         Array, AsmOperand, BinaryOp, BindingId, CaptureBy, Expr, ExprId, ExprOrPatId, Pat, PatId,
         Statement, UnaryOp,
     },
     item_tree::FieldsShape,
-    lang_item::LangItem,
     resolver::ValueNs,
 };
-use hir_expand::name::Name;
-use intern::sym;
+use rustc_ast_ir::Mutability;
 use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_type_ir::inherent::{GenericArgs as _, IntoKind, Ty as _};
 use smallvec::{SmallVec, smallvec};
 use stdx::{format_to, never};
 use syntax::utils::is_raw_identifier;
 
-use crate::db::InternedClosureId;
-use crate::infer::InferenceContext;
 use crate::{
-    Adjust, Adjustment, Binders, BindingMode, ClosureId, Interner, Substitution, Ty, TyExt,
-    db::{HirDatabase, InternedClosure},
-    error_lifetime, from_placeholder_idx,
-    generics::Generics,
-    make_binders,
-    mir::{BorrowKind, MirSpan, MutBorrowKind, ProjectionElem},
+    Adjust, Adjustment, BindingMode,
+    db::{HirDatabase, InternedClosure, InternedClosureId},
+    display::{DisplayTarget, HirDisplay as _},
+    infer::InferenceContext,
+    mir::{BorrowKind, MirSpan, MutBorrowKind},
+    next_solver::{
+        DbInterner, ErrorGuaranteed, GenericArgs, ParamEnv, StoredEarlyBinder, StoredTy, Ty,
+        TyKind,
+        infer::{InferCtxt, traits::ObligationCause},
+        obligation_ctxt::ObligationCtxt,
+    },
     traits::FnTrait,
-    utils,
 };
 
 // The below functions handle capture and closure kind (Fn, FnMut, ..)
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum HirPlaceProjection {
+    Deref,
+    Field(FieldId),
+    TupleField(u32),
+}
+
+impl HirPlaceProjection {
+    fn projected_ty<'db>(
+        self,
+        infcx: &InferCtxt<'db>,
+        env: ParamEnv<'db>,
+        mut base: Ty<'db>,
+        krate: Crate,
+    ) -> Ty<'db> {
+        let interner = infcx.interner;
+        let db = interner.db;
+        if base.is_ty_error() {
+            return Ty::new_error(interner, ErrorGuaranteed);
+        }
+
+        if matches!(base.kind(), TyKind::Alias(..)) {
+            let mut ocx = ObligationCtxt::new(infcx);
+            match ocx.structurally_normalize_ty(&ObligationCause::dummy(), env, base) {
+                Ok(it) => base = it,
+                Err(_) => return Ty::new_error(interner, ErrorGuaranteed),
+            }
+        }
+        match self {
+            HirPlaceProjection::Deref => match base.kind() {
+                TyKind::RawPtr(inner, _) | TyKind::Ref(_, inner, _) => inner,
+                TyKind::Adt(adt_def, subst) if adt_def.is_box() => subst.type_at(0),
+                _ => {
+                    never!(
+                        "Overloaded deref on type {} is not a projection",
+                        base.display(db, DisplayTarget::from_crate(db, krate))
+                    );
+                    Ty::new_error(interner, ErrorGuaranteed)
+                }
+            },
+            HirPlaceProjection::Field(f) => match base.kind() {
+                TyKind::Adt(_, subst) => {
+                    db.field_types(f.parent)[f.local_id].get().instantiate(interner, subst)
+                }
+                ty => {
+                    never!("Only adt has field, found {:?}", ty);
+                    Ty::new_error(interner, ErrorGuaranteed)
+                }
+            },
+            HirPlaceProjection::TupleField(idx) => match base.kind() {
+                TyKind::Tuple(subst) => {
+                    subst.as_slice().get(idx as usize).copied().unwrap_or_else(|| {
+                        never!("Out of bound tuple field");
+                        Ty::new_error(interner, ErrorGuaranteed)
+                    })
+                }
+                ty => {
+                    never!("Only tuple has tuple field: {:?}", ty);
+                    Ty::new_error(interner, ErrorGuaranteed)
+                }
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, salsa::Update)]
 pub(crate) struct HirPlace {
     pub(crate) local: BindingId,
-    pub(crate) projections: Vec<ProjectionElem<Infallible, Ty>>,
+    pub(crate) projections: Vec<HirPlaceProjection>,
 }
 
 impl HirPlace {
-    fn ty(&self, ctx: &mut InferenceContext<'_>) -> Ty {
-        let mut ty = ctx.table.resolve_completely(ctx.result[self.local].clone());
+    fn ty<'db>(&self, ctx: &mut InferenceContext<'_, 'db>) -> Ty<'db> {
+        let krate = ctx.krate();
+        let mut ty = ctx.table.resolve_completely(ctx.result.binding_ty(self.local));
         for p in &self.projections {
-            ty = p.projected_ty(
-                ty,
-                ctx.db,
-                |_, _, _| {
-                    unreachable!("Closure field only happens in MIR");
-                },
-                ctx.owner.module(ctx.db).krate(),
-            );
+            ty = p.projected_ty(ctx.infcx(), ctx.table.param_env, ty, krate);
         }
         ty
     }
@@ -70,7 +126,7 @@ impl HirPlace {
         if let CaptureKind::ByRef(BorrowKind::Mut {
             kind: MutBorrowKind::Default | MutBorrowKind::TwoPhasedBorrow,
         }) = current_capture
-            && self.projections[len..].contains(&ProjectionElem::Deref)
+            && self.projections[len..].contains(&HirPlaceProjection::Deref)
         {
             current_capture =
                 CaptureKind::ByRef(BorrowKind::Mut { kind: MutBorrowKind::ClosureCapture });
@@ -85,7 +141,7 @@ pub enum CaptureKind {
     ByValue,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, salsa::Update)]
 pub struct CapturedItem {
     pub(crate) place: HirPlace,
     pub(crate) kind: CaptureKind,
@@ -96,7 +152,7 @@ pub struct CapturedItem {
     /// copy all captures of the inner closure to the outer closure, and then we may
     /// truncate them, and we want the correct span to be reported.
     span_stacks: SmallVec<[SmallVec<[MirSpan; 3]>; 3]>,
-    pub(crate) ty: Binders<Ty>,
+    pub(crate) ty: StoredEarlyBinder<StoredTy>,
 }
 
 impl CapturedItem {
@@ -106,11 +162,12 @@ impl CapturedItem {
 
     /// Returns whether this place has any field (aka. non-deref) projections.
     pub fn has_field_projections(&self) -> bool {
-        self.place.projections.iter().any(|it| !matches!(it, ProjectionElem::Deref))
+        self.place.projections.iter().any(|it| !matches!(it, HirPlaceProjection::Deref))
     }
 
-    pub fn ty(&self, db: &dyn HirDatabase, subst: &Substitution) -> Ty {
-        self.ty.clone().substitute(Interner, &utils::ClosureSubst(subst).parent_subst(db))
+    pub fn ty<'db>(&self, db: &'db dyn HirDatabase, subst: GenericArgs<'db>) -> Ty<'db> {
+        let interner = DbInterner::new_no_crate(db);
+        self.ty.get().instantiate(interner, subst.as_closure().parent_args())
     }
 
     pub fn kind(&self) -> CaptureKind {
@@ -127,8 +184,8 @@ impl CapturedItem {
         let mut result = body[self.place.local].name.as_str().to_owned();
         for proj in &self.place.projections {
             match proj {
-                ProjectionElem::Deref => {}
-                ProjectionElem::Field(Either::Left(f)) => {
+                HirPlaceProjection::Deref => {}
+                HirPlaceProjection::Field(f) => {
                     let variant_data = f.parent.fields(db);
                     match variant_data.shape {
                         FieldsShape::Record => {
@@ -145,18 +202,12 @@ impl CapturedItem {
                         FieldsShape::Unit => {}
                     }
                 }
-                ProjectionElem::Field(Either::Right(f)) => format_to!(result, "_{}", f.index),
-                &ProjectionElem::ClosureField(field) => format_to!(result, "_{field}"),
-                ProjectionElem::Index(_)
-                | ProjectionElem::ConstantIndex { .. }
-                | ProjectionElem::Subslice { .. }
-                | ProjectionElem::OpaqueCast(_) => {
-                    never!("Not happen in closure capture");
-                    continue;
+                HirPlaceProjection::TupleField(idx) => {
+                    format_to!(result, "_{idx}")
                 }
             }
         }
-        if is_raw_identifier(&result, owner.module(db).krate().data(db).edition) {
+        if is_raw_identifier(&result, owner.module(db).krate(db).data(db).edition) {
             result.insert_str(0, "r#");
         }
         result
@@ -170,8 +221,8 @@ impl CapturedItem {
         for proj in &self.place.projections {
             match proj {
                 // In source code autoderef kicks in.
-                ProjectionElem::Deref => {}
-                ProjectionElem::Field(Either::Left(f)) => {
+                HirPlaceProjection::Deref => {}
+                HirPlaceProjection::Field(f) => {
                     let variant_data = f.parent.fields(db);
                     match variant_data.shape {
                         FieldsShape::Record => format_to!(
@@ -191,19 +242,8 @@ impl CapturedItem {
                         FieldsShape::Unit => {}
                     }
                 }
-                ProjectionElem::Field(Either::Right(f)) => {
-                    let field = f.index;
-                    format_to!(result, ".{field}");
-                }
-                &ProjectionElem::ClosureField(field) => {
-                    format_to!(result, ".{field}");
-                }
-                ProjectionElem::Index(_)
-                | ProjectionElem::ConstantIndex { .. }
-                | ProjectionElem::Subslice { .. }
-                | ProjectionElem::OpaqueCast(_) => {
-                    never!("Not happen in closure capture");
-                    continue;
+                HirPlaceProjection::TupleField(idx) => {
+                    format_to!(result, ".{idx}")
                 }
             }
         }
@@ -212,7 +252,7 @@ impl CapturedItem {
             .projections
             .iter()
             .rev()
-            .take_while(|proj| matches!(proj, ProjectionElem::Deref))
+            .take_while(|proj| matches!(proj, HirPlaceProjection::Deref))
             .count();
         result.insert_str(0, &"*".repeat(final_derefs_count));
         result
@@ -226,11 +266,11 @@ impl CapturedItem {
         let mut field_need_paren = false;
         for proj in &self.place.projections {
             match proj {
-                ProjectionElem::Deref => {
+                HirPlaceProjection::Deref => {
                     result = format!("*{result}");
                     field_need_paren = true;
                 }
-                ProjectionElem::Field(Either::Left(f)) => {
+                HirPlaceProjection::Field(f) => {
                     if field_need_paren {
                         result = format!("({result})");
                     }
@@ -250,27 +290,12 @@ impl CapturedItem {
                     result = format!("{result}.{field}");
                     field_need_paren = false;
                 }
-                ProjectionElem::Field(Either::Right(f)) => {
-                    let field = f.index;
+                HirPlaceProjection::TupleField(idx) => {
                     if field_need_paren {
                         result = format!("({result})");
                     }
-                    result = format!("{result}.{field}");
+                    result = format!("{result}.{idx}");
                     field_need_paren = false;
-                }
-                &ProjectionElem::ClosureField(field) => {
-                    if field_need_paren {
-                        result = format!("({result})");
-                    }
-                    result = format!("{result}.{field}");
-                    field_need_paren = false;
-                }
-                ProjectionElem::Index(_)
-                | ProjectionElem::ConstantIndex { .. }
-                | ProjectionElem::Subslice { .. }
-                | ProjectionElem::OpaqueCast(_) => {
-                    never!("Not happen in closure capture");
-                    continue;
                 }
             }
         }
@@ -287,7 +312,7 @@ pub(crate) struct CapturedItemWithoutTy {
 }
 
 impl CapturedItemWithoutTy {
-    fn with_ty(self, ctx: &mut InferenceContext<'_>) -> CapturedItem {
+    fn with_ty(self, ctx: &mut InferenceContext<'_, '_>) -> CapturedItem {
         let ty = self.place.ty(ctx);
         let ty = match &self.kind {
             CaptureKind::ByValue => ty,
@@ -296,65 +321,19 @@ impl CapturedItemWithoutTy {
                     BorrowKind::Mut { .. } => Mutability::Mut,
                     _ => Mutability::Not,
                 };
-                TyKind::Ref(m, error_lifetime(), ty).intern(Interner)
+                Ty::new_ref(ctx.interner(), ctx.types.regions.error, ty, m)
             }
         };
-        return CapturedItem {
+        CapturedItem {
             place: self.place,
             kind: self.kind,
             span_stacks: self.span_stacks,
-            ty: replace_placeholder_with_binder(ctx, ty),
-        };
-
-        fn replace_placeholder_with_binder(ctx: &mut InferenceContext<'_>, ty: Ty) -> Binders<Ty> {
-            struct Filler<'a> {
-                db: &'a dyn HirDatabase,
-                generics: &'a Generics,
-            }
-            impl FallibleTypeFolder<Interner> for Filler<'_> {
-                type Error = ();
-
-                fn as_dyn(&mut self) -> &mut dyn FallibleTypeFolder<Interner, Error = Self::Error> {
-                    self
-                }
-
-                fn interner(&self) -> Interner {
-                    Interner
-                }
-
-                fn try_fold_free_placeholder_const(
-                    &mut self,
-                    ty: chalk_ir::Ty<Interner>,
-                    idx: chalk_ir::PlaceholderIndex,
-                    outer_binder: DebruijnIndex,
-                ) -> Result<chalk_ir::Const<Interner>, Self::Error> {
-                    let x = from_placeholder_idx(self.db, idx).0;
-                    let Some(idx) = self.generics.type_or_const_param_idx(x) else {
-                        return Err(());
-                    };
-                    Ok(BoundVar::new(outer_binder, idx).to_const(Interner, ty))
-                }
-
-                fn try_fold_free_placeholder_ty(
-                    &mut self,
-                    idx: chalk_ir::PlaceholderIndex,
-                    outer_binder: DebruijnIndex,
-                ) -> std::result::Result<Ty, Self::Error> {
-                    let x = from_placeholder_idx(self.db, idx).0;
-                    let Some(idx) = self.generics.type_or_const_param_idx(x) else {
-                        return Err(());
-                    };
-                    Ok(BoundVar::new(outer_binder, idx).to_ty(Interner))
-                }
-            }
-            let filler = &mut Filler { db: ctx.db, generics: ctx.generics() };
-            let result = ty.clone().try_fold_with(filler, DebruijnIndex::INNERMOST).unwrap_or(ty);
-            make_binders(ctx.db, filler.generics, result)
+            ty: StoredEarlyBinder::bind(ty.store()),
         }
     }
 }
 
-impl InferenceContext<'_> {
+impl<'db> InferenceContext<'_, 'db> {
     fn place_of_expr(&mut self, tgt_expr: ExprId) -> Option<HirPlace> {
         let r = self.place_of_expr_without_adjust(tgt_expr)?;
         let adjustments =
@@ -398,17 +377,21 @@ impl InferenceContext<'_> {
                 let mut place = self.place_of_expr(*expr)?;
                 let field = self.result.field_resolution(tgt_expr)?;
                 self.current_capture_span_stack.push(MirSpan::ExprId(tgt_expr));
-                place.projections.push(ProjectionElem::Field(field));
+                place.projections.push(field.either(HirPlaceProjection::Field, |f| {
+                    HirPlaceProjection::TupleField(f.index)
+                }));
                 return Some(place);
             }
             Expr::UnaryOp { expr, op: UnaryOp::Deref } => {
-                if matches!(
-                    self.expr_ty_after_adjustments(*expr).kind(Interner),
-                    TyKind::Ref(..) | TyKind::Raw(..)
-                ) {
+                let is_builtin_deref = match self.expr_ty(*expr).kind() {
+                    TyKind::Ref(..) | TyKind::RawPtr(..) => true,
+                    TyKind::Adt(adt_def, _) if adt_def.is_box() => true,
+                    _ => false,
+                };
+                if is_builtin_deref {
                     let mut place = self.place_of_expr(*expr)?;
                     self.current_capture_span_stack.push(MirSpan::ExprId(tgt_expr));
-                    place.projections.push(ProjectionElem::Deref);
+                    place.projections.push(HirPlaceProjection::Deref);
                     return Some(place);
                 }
             }
@@ -651,28 +634,19 @@ impl InferenceContext<'_> {
             }
             Expr::Field { expr, name: _ } => self.select_from_expr(*expr),
             Expr::UnaryOp { expr, op: UnaryOp::Deref } => {
-                if matches!(
-                    self.expr_ty_after_adjustments(*expr).kind(Interner),
-                    TyKind::Ref(..) | TyKind::Raw(..)
-                ) {
-                    self.select_from_expr(*expr);
-                } else if let Some((f, _)) = self.result.method_resolution(tgt_expr) {
-                    let mutability = 'b: {
-                        if let Some(deref_trait) =
-                            self.resolve_lang_item(LangItem::DerefMut).and_then(|it| it.as_trait())
-                            && let Some(deref_fn) = deref_trait
-                                .trait_items(self.db)
-                                .method_by_name(&Name::new_symbol_root(sym::deref_mut))
-                        {
-                            break 'b deref_fn == f;
+                if self.result.method_resolution(tgt_expr).is_some() {
+                    // Overloaded deref.
+                    match self.expr_ty_after_adjustments(*expr).kind() {
+                        TyKind::Ref(_, _, mutability) => {
+                            let place = self.place_of_expr(*expr);
+                            match mutability {
+                                Mutability::Mut => self.mutate_expr(*expr, place),
+                                Mutability::Not => self.ref_expr(*expr, place),
+                            }
                         }
-                        false
-                    };
-                    let place = self.place_of_expr(*expr);
-                    if mutability {
-                        self.mutate_expr(*expr, place);
-                    } else {
-                        self.ref_expr(*expr, place);
+                        // FIXME: Is this correct wrt. raw pointer derefs?
+                        TyKind::RawPtr(..) => self.select_from_expr(*expr),
+                        _ => never!("deref adjustments should include taking a mutable reference"),
                     }
                 } else {
                     self.select_from_expr(*expr);
@@ -728,12 +702,12 @@ impl InferenceContext<'_> {
             }
             Expr::Closure { .. } => {
                 let ty = self.expr_ty(tgt_expr);
-                let TyKind::Closure(id, _) = ty.kind(Interner) else {
+                let TyKind::Closure(id, _) = ty.kind() else {
                     never!("closure type is always closure");
                     return;
                 };
                 let (captures, _) =
-                    self.result.closure_info.get(id).expect(
+                    self.result.closure_info.get(&id.0).expect(
                         "We sort closures, so we should always have data for inner closures",
                     );
                 let mut cc = mem::take(&mut self.current_captures);
@@ -830,7 +804,7 @@ impl InferenceContext<'_> {
             }
             Pat::Bind { id, .. } => match self.result.binding_modes[p] {
                 crate::BindingMode::Move => {
-                    if self.is_ty_copy(self.result.type_of_binding[*id].clone()) {
+                    if self.is_ty_copy(self.result.binding_ty(*id)) {
                         update_result(CaptureKind::ByRef(BorrowKind::Shared));
                     } else {
                         update_result(CaptureKind::ByValue);
@@ -848,20 +822,6 @@ impl InferenceContext<'_> {
         self.body.walk_pats_shallow(p, |p| self.walk_pat_inner(p, update_result, for_mut));
     }
 
-    fn expr_ty(&self, expr: ExprId) -> Ty {
-        self.result[expr].clone()
-    }
-
-    fn expr_ty_after_adjustments(&self, e: ExprId) -> Ty {
-        let mut ty = None;
-        if let Some(it) = self.result.expr_adjustments.get(&e)
-            && let Some(it) = it.last()
-        {
-            ty = Some(it.target.clone());
-        }
-        ty.unwrap_or_else(|| self.expr_ty(e))
-    }
-
     fn is_upvar(&self, place: &HirPlace) -> bool {
         if let Some(c) = self.current_closure {
             let InternedClosure(_, root) = self.db.lookup_intern_closure(c);
@@ -870,14 +830,20 @@ impl InferenceContext<'_> {
         false
     }
 
-    fn is_ty_copy(&mut self, ty: Ty) -> bool {
-        if let TyKind::Closure(id, _) = ty.kind(Interner) {
+    fn is_ty_copy(&mut self, ty: Ty<'db>) -> bool {
+        if let TyKind::Closure(id, _) = ty.kind() {
             // FIXME: We handle closure as a special case, since chalk consider every closure as copy. We
             // should probably let chalk know which closures are copy, but I don't know how doing it
             // without creating query cycles.
-            return self.result.closure_info.get(id).map(|it| it.1 == FnTrait::Fn).unwrap_or(true);
+            return self
+                .result
+                .closure_info
+                .get(&id.0)
+                .map(|it| it.1 == FnTrait::Fn)
+                .unwrap_or(true);
         }
-        self.table.resolve_completely(ty).is_copy(self.db, self.owner)
+        let ty = self.table.resolve_completely(ty);
+        self.table.type_is_copy_modulo_regions(ty)
     }
 
     fn select_from_expr(&mut self, expr: ExprId) {
@@ -888,8 +854,8 @@ impl InferenceContext<'_> {
         // FIXME: Borrow checker problems without this.
         let mut current_captures = std::mem::take(&mut self.current_captures);
         for capture in &mut current_captures {
-            let mut ty = self.table.resolve_completely(self.result[capture.place.local].clone());
-            if ty.as_raw_ptr().is_some() || ty.is_union() {
+            let mut ty = self.table.resolve_completely(self.result.binding_ty(capture.place.local));
+            if ty.is_raw_ptr() || ty.is_union() {
                 capture.kind = CaptureKind::ByRef(BorrowKind::Shared);
                 self.truncate_capture_spans(capture, 0);
                 capture.place.projections.truncate(0);
@@ -897,14 +863,12 @@ impl InferenceContext<'_> {
             }
             for (i, p) in capture.place.projections.iter().enumerate() {
                 ty = p.projected_ty(
+                    &self.table.infer_ctxt,
+                    self.table.param_env,
                     ty,
-                    self.db,
-                    |_, _, _| {
-                        unreachable!("Closure field only happens in MIR");
-                    },
-                    self.owner.module(self.db).krate(),
+                    self.owner.module(self.db).krate(self.db),
                 );
-                if ty.as_raw_ptr().is_some() || ty.is_union() {
+                if ty.is_raw_ptr() || ty.is_union() {
                     capture.kind = CaptureKind::ByRef(BorrowKind::Shared);
                     self.truncate_capture_spans(capture, i + 1);
                     capture.place.projections.truncate(i + 1);
@@ -920,7 +884,7 @@ impl InferenceContext<'_> {
         let mut current_captures = std::mem::take(&mut self.current_captures);
         for capture in &mut current_captures {
             if let Some(first_deref) =
-                capture.place.projections.iter().position(|proj| *proj == ProjectionElem::Deref)
+                capture.place.projections.iter().position(|proj| *proj == HirPlaceProjection::Deref)
             {
                 self.truncate_capture_spans(capture, first_deref);
                 capture.place.projections.truncate(first_deref);
@@ -943,7 +907,7 @@ impl InferenceContext<'_> {
                 }
                 match it.next() {
                     Some(it) => {
-                        lookup_place.projections.push(it.clone());
+                        lookup_place.projections.push(*it);
                     }
                     None => break None,
                 }
@@ -970,7 +934,7 @@ impl InferenceContext<'_> {
     fn consume_with_pat(&mut self, mut place: HirPlace, tgt_pat: PatId) {
         let adjustments_count =
             self.result.pat_adjustments.get(&tgt_pat).map(|it| it.len()).unwrap_or_default();
-        place.projections.extend((0..adjustments_count).map(|_| ProjectionElem::Deref));
+        place.projections.extend((0..adjustments_count).map(|_| HirPlaceProjection::Deref));
         self.current_capture_span_stack
             .extend((0..adjustments_count).map(|_| MirSpan::PatId(tgt_pat)));
         'reset_span_stack: {
@@ -978,8 +942,8 @@ impl InferenceContext<'_> {
                 Pat::Missing | Pat::Wild => (),
                 Pat::Tuple { args, ellipsis } => {
                     let (al, ar) = args.split_at(ellipsis.map_or(args.len(), |it| it as usize));
-                    let field_count = match self.result[tgt_pat].kind(Interner) {
-                        TyKind::Tuple(_, s) => s.len(Interner),
+                    let field_count = match self.result.pat_ty(tgt_pat).kind() {
+                        TyKind::Tuple(s) => s.len(),
                         _ => break 'reset_span_stack,
                     };
                     let fields = 0..field_count;
@@ -987,10 +951,7 @@ impl InferenceContext<'_> {
                     for (&arg, i) in it {
                         let mut p = place.clone();
                         self.current_capture_span_stack.push(MirSpan::PatId(arg));
-                        p.projections.push(ProjectionElem::Field(Either::Right(TupleFieldId {
-                            tuple: TupleId(!0), // dummy this, as its unused anyways
-                            index: i as u32,
-                        })));
+                        p.projections.push(HirPlaceProjection::TupleField(i as u32));
                         self.consume_with_pat(p, arg);
                         self.current_capture_span_stack.pop();
                     }
@@ -1017,10 +978,10 @@ impl InferenceContext<'_> {
                                 };
                                 let mut p = place.clone();
                                 self.current_capture_span_stack.push(MirSpan::PatId(arg));
-                                p.projections.push(ProjectionElem::Field(Either::Left(FieldId {
+                                p.projections.push(HirPlaceProjection::Field(FieldId {
                                     parent: variant,
                                     local_id,
-                                })));
+                                }));
                                 self.consume_with_pat(p, arg);
                                 self.current_capture_span_stack.pop();
                             }
@@ -1072,10 +1033,10 @@ impl InferenceContext<'_> {
                             for (&arg, (i, _)) in it {
                                 let mut p = place.clone();
                                 self.current_capture_span_stack.push(MirSpan::PatId(arg));
-                                p.projections.push(ProjectionElem::Field(Either::Left(FieldId {
+                                p.projections.push(HirPlaceProjection::Field(FieldId {
                                     parent: variant,
                                     local_id: i,
-                                })));
+                                }));
                                 self.consume_with_pat(p, arg);
                                 self.current_capture_span_stack.pop();
                             }
@@ -1084,7 +1045,7 @@ impl InferenceContext<'_> {
                 }
                 Pat::Ref { pat, mutability: _ } => {
                     self.current_capture_span_stack.push(MirSpan::PatId(tgt_pat));
-                    place.projections.push(ProjectionElem::Deref);
+                    place.projections.push(HirPlaceProjection::Deref);
                     self.consume_with_pat(place, *pat);
                     self.current_capture_span_stack.pop();
                 }
@@ -1125,9 +1086,9 @@ impl InferenceContext<'_> {
         r
     }
 
-    fn analyze_closure(&mut self, closure: ClosureId) -> FnTrait {
-        let InternedClosure(_, root) = self.db.lookup_intern_closure(closure.into());
-        self.current_closure = Some(closure.into());
+    fn analyze_closure(&mut self, closure: InternedClosureId) -> FnTrait {
+        let InternedClosure(_, root) = self.db.lookup_intern_closure(closure);
+        self.current_closure = Some(closure);
         let Expr::Closure { body, capture_by, .. } = &self.body[root] else {
             unreachable!("Closure expression id is always closure");
         };
@@ -1138,7 +1099,7 @@ impl InferenceContext<'_> {
                 CaptureKind::ByRef(BorrowKind::Mut {
                     kind: MutBorrowKind::Default | MutBorrowKind::TwoPhasedBorrow
                 })
-            ) && !item.place.projections.contains(&ProjectionElem::Deref)
+            ) && !item.place.projections.contains(&HirPlaceProjection::Deref)
             {
                 // FIXME: remove the `mutated_bindings_in_closure` completely and add proper fake reads in
                 // MIR. I didn't do that due duplicate diagnostics.
@@ -1193,9 +1154,9 @@ impl InferenceContext<'_> {
                         self.result.expr_adjustments.remove(&callee).unwrap_or_default().into_vec();
                     self.write_fn_trait_method_resolution(
                         kind,
-                        &derefed_callee,
+                        derefed_callee,
                         &mut adjustments,
-                        &callee_ty,
+                        callee_ty,
                         &params,
                         expr,
                     );
@@ -1213,27 +1174,26 @@ impl InferenceContext<'_> {
     ///
     /// These dependencies are collected in the main inference. We do a topological sort in this function. It
     /// will consume the `deferred_closures` field and return its content in a sorted vector.
-    fn sort_closures(&mut self) -> Vec<(ClosureId, Vec<(Ty, Ty, Vec<Ty>, ExprId)>)> {
+    fn sort_closures(
+        &mut self,
+    ) -> Vec<(InternedClosureId, Vec<(Ty<'db>, Ty<'db>, Vec<Ty<'db>>, ExprId)>)> {
         let mut deferred_closures = mem::take(&mut self.deferred_closures);
-        let mut dependents_count: FxHashMap<ClosureId, usize> =
-            deferred_closures.keys().map(|it| ((*it).into(), 0)).collect();
+        let mut dependents_count: FxHashMap<InternedClosureId, usize> =
+            deferred_closures.keys().map(|it| (*it, 0)).collect();
         for deps in self.closure_dependencies.values() {
             for dep in deps {
-                *dependents_count.entry((*dep).into()).or_default() += 1;
+                *dependents_count.entry(*dep).or_default() += 1;
             }
         }
-        let mut queue: Vec<_> = deferred_closures
-            .keys()
-            .copied()
-            .filter(|&it| dependents_count[&it.into()] == 0)
-            .collect();
+        let mut queue: Vec<_> =
+            deferred_closures.keys().copied().filter(|&it| dependents_count[&it] == 0).collect();
         let mut result = vec![];
         while let Some(it) = queue.pop() {
             if let Some(d) = deferred_closures.remove(&it) {
-                result.push((it.into(), d));
+                result.push((it, d));
             }
             for &dep in self.closure_dependencies.get(&it).into_iter().flat_map(|it| it.iter()) {
-                let cnt = dependents_count.get_mut(&dep.into()).unwrap();
+                let cnt = dependents_count.get_mut(&dep).unwrap();
                 *cnt -= 1;
                 if *cnt == 0 {
                     queue.push(dep);
@@ -1289,7 +1249,7 @@ fn apply_adjusts_to_place(
         match &adj.kind {
             Adjust::Deref(None) => {
                 current_capture_span_stack.push(span);
-                r.projections.push(ProjectionElem::Deref);
+                r.projections.push(HirPlaceProjection::Deref);
             }
             _ => return None,
         }

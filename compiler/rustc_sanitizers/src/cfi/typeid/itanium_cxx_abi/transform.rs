@@ -6,15 +6,15 @@
 
 use std::iter;
 
-use rustc_hir as hir;
-use rustc_hir::LangItem;
+use rustc_hir::attrs::AttributeKind;
+use rustc_hir::{self as hir, LangItem, find_attr};
 use rustc_middle::bug;
 use rustc_middle::ty::{
-    self, ExistentialPredicateStableCmpExt as _, Instance, InstanceKind, IntTy, List, TraitRef, Ty,
-    TyCtxt, TypeFoldable, TypeFolder, TypeSuperFoldable, TypeVisitableExt, UintTy,
+    self, AssocContainer, ExistentialPredicateStableCmpExt as _, Instance, IntTy, List, TraitRef,
+    Ty, TyCtxt, TypeFoldable, TypeFolder, TypeSuperFoldable, TypeVisitableExt, UintTy,
 };
+use rustc_span::DUMMY_SP;
 use rustc_span::def_id::DefId;
-use rustc_span::{DUMMY_SP, sym};
 use rustc_trait_selection::traits;
 use tracing::{debug, instrument};
 
@@ -138,7 +138,10 @@ impl<'tcx> TypeFolder<TyCtxt<'tcx>> for TransformTy<'tcx> {
                 {
                     // Don't transform repr(transparent) types with an user-defined CFI encoding to
                     // preserve the user-defined CFI encoding.
-                    if let Some(_) = self.tcx.get_attr(adt_def.did(), sym::cfi_encoding) {
+                    if find_attr!(
+                        self.tcx.get_all_attrs(adt_def.did()),
+                        AttributeKind::CfiEncoding { .. }
+                    ) {
                         return t;
                     }
                     let variant = adt_def.non_enum_variant();
@@ -458,6 +461,30 @@ pub(crate) fn transform_instance<'tcx>(
     instance
 }
 
+fn default_or_shim<'tcx>(tcx: TyCtxt<'tcx>, instance: Instance<'tcx>) -> Option<DefId> {
+    match instance.def {
+        ty::InstanceKind::Item(def_id) | ty::InstanceKind::FnPtrShim(def_id, _) => {
+            tcx.opt_associated_item(def_id).map(|item| item.def_id)
+        }
+        _ => None,
+    }
+}
+
+/// Determines if an instance represents a trait method implementation and returns the necessary
+/// information for type erasure.
+///
+/// This function handles two main cases:
+///
+/// * **Implementation in an `impl` block**: When the instance represents a concrete implementation
+///   of a trait method in an `impl` block, it extracts the trait reference, method ID, and trait
+///   ID from the implementation. The method ID is obtained from the `trait_item_def_id` field of
+///   the associated item, which points to the original trait method definition.
+///
+/// * **Provided method in a `trait` block or synthetic `shim`**: When the instance represents a
+///   default implementation provided in the trait definition itself or a synthetic shim, it uses
+///   the instance's own `def_id` as the method ID and determines the trait ID from the associated
+///   item.
+///
 fn implemented_method<'tcx>(
     tcx: TyCtxt<'tcx>,
     instance: Instance<'tcx>,
@@ -466,20 +493,21 @@ fn implemented_method<'tcx>(
     let method_id;
     let trait_id;
     let trait_method;
-    let ancestor = if let Some(impl_id) = tcx.impl_of_assoc(instance.def_id()) {
-        // Implementation in an `impl` block
-        trait_ref = tcx.impl_trait_ref(impl_id)?;
-        method_id = tcx.trait_item_of(instance.def_id())?;
+    let assoc = tcx.opt_associated_item(instance.def_id())?;
+    let ancestor = if let AssocContainer::TraitImpl(Ok(trait_method_id)) = assoc.container {
+        let impl_id = tcx.parent(instance.def_id());
+        trait_ref = tcx.impl_trait_ref(impl_id);
+        method_id = trait_method_id;
         trait_method = tcx.associated_item(method_id);
         trait_id = trait_ref.skip_binder().def_id;
         impl_id
-    } else if let InstanceKind::Item(def_id) = instance.def
-        && let Some(trait_method_bound) = tcx.opt_associated_item(def_id)
+    } else if let AssocContainer::Trait = assoc.container
+        && let Some(trait_method_def_id) = default_or_shim(tcx, instance)
     {
-        // Provided method in a `trait` block
-        trait_method = trait_method_bound;
-        method_id = instance.def_id();
-        trait_id = tcx.trait_of_assoc(method_id)?;
+        // Provided method in a `trait` block or a synthetic `shim`
+        trait_method = assoc;
+        method_id = trait_method_def_id;
+        trait_id = tcx.parent(method_id);
         trait_ref = ty::EarlyBinder::bind(TraitRef::from_assoc(tcx, trait_id, instance.args));
         trait_id
     } else {

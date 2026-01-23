@@ -3,6 +3,7 @@ use edos_rt::process::thread_create;
 use crate::io;
 use crate::num::NonZero;
 use crate::sys::decode_error_kind;
+use crate::thread::ThreadInit;
 use crate::time::Duration;
 
 pub struct Thread(u64);
@@ -11,12 +12,8 @@ pub const DEFAULT_MIN_STACK_SIZE: usize = 64 * 1024;
 
 impl Thread {
     // unsafe: see thread::Builder::spawn_unchecked for safety requirements
-    pub unsafe fn new(
-        _stack: usize,
-        _name: Option<&str>,
-        p: Box<dyn FnOnce()>,
-    ) -> io::Result<Thread> {
-        let p = Box::into_raw(Box::new(p));
+    pub unsafe fn new(_stack: usize, init: Box<ThreadInit>) -> io::Result<Thread> {
+        let p = Box::into_raw(init);
 
         let pid: io::Result<u64> = match thread_create(thread_start, p.cast()) {
             Ok(pid) => Ok(pid),
@@ -34,8 +31,9 @@ impl Thread {
 
 extern "C" fn thread_start(main: *mut u8) -> i32 {
     unsafe {
-        // Finally, let's run some code.
-        Box::from_raw(main.cast::<Box<dyn FnOnce()>>())();
+        // Initialize thread and run the closure
+        let rust_start = Box::from_raw(main.cast::<ThreadInit>()).init();
+        rust_start();
 
         // run all destructors
         crate::sys::thread_local::destructors::run();

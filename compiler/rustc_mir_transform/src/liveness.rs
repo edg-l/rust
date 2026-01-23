@@ -45,6 +45,9 @@ struct Access {
     /// When we encounter multiple statements at the same location, we only increase the liveness,
     /// in order to avoid false positives.
     live: bool,
+    /// Is this a direct access to the place itself, no projections, or to a field?
+    /// This helps distinguish `x = ...` from `x.field = ...`
+    is_direct: bool,
 }
 
 #[tracing::instrument(level = "debug", skip(tcx), ret)]
@@ -162,45 +165,6 @@ fn is_capture(place: PlaceRef<'_>) -> bool {
     } else {
         false
     }
-}
-
-/// Give a diagnostic when any of the string constants look like a naked format string that would
-/// interpolate our dead local.
-fn maybe_suggest_literal_matching_name(
-    body: &Body<'_>,
-    name: Symbol,
-) -> Vec<errors::UnusedVariableStringInterp> {
-    struct LiteralFinder<'body, 'tcx> {
-        body: &'body Body<'tcx>,
-        name: String,
-        name_colon: String,
-        found: Vec<errors::UnusedVariableStringInterp>,
-    }
-
-    impl<'tcx> Visitor<'tcx> for LiteralFinder<'_, 'tcx> {
-        fn visit_const_operand(&mut self, constant: &ConstOperand<'tcx>, loc: Location) {
-            if let ty::Ref(_, ref_ty, _) = constant.ty().kind()
-                && ref_ty.kind() == &ty::Str
-            {
-                let rendered_constant = constant.const_.to_string();
-                if rendered_constant.contains(&self.name)
-                    || rendered_constant.contains(&self.name_colon)
-                {
-                    let lit = self.body.source_info(loc).span;
-                    self.found.push(errors::UnusedVariableStringInterp { lit });
-                }
-            }
-        }
-    }
-
-    let mut finder = LiteralFinder {
-        body,
-        name: format!("{{{name}}}"),
-        name_colon: format!("{{{name}:"),
-        found: vec![],
-    };
-    finder.visit_body(body);
-    finder.found
 }
 
 /// Give a diagnostic when an unused variable may be a typo of a unit variant or a struct.
@@ -689,15 +653,17 @@ impl<'a, 'tcx> AssignmentResult<'a, 'tcx> {
             |place: Place<'tcx>, kind, source_info: SourceInfo, live: &DenseBitSet<PlaceIndex>| {
                 if let Some((index, extra_projections)) = checked_places.get(place.as_ref()) {
                     if !is_indirect(extra_projections) {
+                        let is_direct = extra_projections.is_empty();
                         match assignments[index].entry(source_info) {
                             IndexEntry::Vacant(v) => {
-                                let access = Access { kind, live: live.contains(index) };
+                                let access = Access { kind, live: live.contains(index), is_direct };
                                 v.insert(access);
                             }
                             IndexEntry::Occupied(mut o) => {
                                 // There were already a sighting. Mark this statement as live if it
                                 // was, to avoid false positives.
                                 o.get_mut().live |= live.contains(index);
+                                o.get_mut().is_direct &= is_direct;
                             }
                         }
                     }
@@ -781,7 +747,7 @@ impl<'a, 'tcx> AssignmentResult<'a, 'tcx> {
                     continue;
                 };
                 let source_info = body.local_decls[place.local].source_info;
-                let access = Access { kind, live: live.contains(index) };
+                let access = Access { kind, live: live.contains(index), is_direct: true };
                 assignments[index].insert(source_info, access);
             }
         }
@@ -875,9 +841,74 @@ impl<'a, 'tcx> AssignmentResult<'a, 'tcx> {
         dead_captures
     }
 
+    /// Check if a local is referenced in any reachable basic block.
+    /// Variables in unreachable code (e.g., after `todo!()`) should not trigger unused warnings.
+    fn is_local_in_reachable_code(&self, local: Local) -> bool {
+        struct LocalVisitor {
+            target_local: Local,
+            found: bool,
+        }
+
+        impl<'tcx> Visitor<'tcx> for LocalVisitor {
+            fn visit_local(&mut self, local: Local, _context: PlaceContext, _location: Location) {
+                if local == self.target_local {
+                    self.found = true;
+                }
+            }
+        }
+
+        let mut visitor = LocalVisitor { target_local: local, found: false };
+        for (bb, bb_data) in traversal::postorder(self.body) {
+            visitor.visit_basic_block_data(bb, bb_data);
+            if visitor.found {
+                return true;
+            }
+        }
+
+        false
+    }
+
     /// Report fully unused locals, and forget the corresponding assignments.
     fn report_fully_unused(&mut self) {
         let tcx = self.tcx;
+
+        // Give a diagnostic when any of the string constants look like a naked format string that
+        // would interpolate our dead local.
+        let mut string_constants_in_body = None;
+        let mut maybe_suggest_literal_matching_name = |name: Symbol| {
+            // Visiting MIR to enumerate string constants can be expensive, so cache the result.
+            let string_constants_in_body = string_constants_in_body.get_or_insert_with(|| {
+                struct LiteralFinder {
+                    found: Vec<(Span, String)>,
+                }
+
+                impl<'tcx> Visitor<'tcx> for LiteralFinder {
+                    fn visit_const_operand(&mut self, constant: &ConstOperand<'tcx>, _: Location) {
+                        if let ty::Ref(_, ref_ty, _) = constant.ty().kind()
+                            && ref_ty.kind() == &ty::Str
+                        {
+                            let rendered_constant = constant.const_.to_string();
+                            self.found.push((constant.span, rendered_constant));
+                        }
+                    }
+                }
+
+                let mut finder = LiteralFinder { found: vec![] };
+                finder.visit_body(self.body);
+                finder.found
+            });
+
+            let brace_name = format!("{{{name}");
+            string_constants_in_body
+                .iter()
+                .filter(|(_, rendered_constant)| {
+                    rendered_constant
+                        .split(&brace_name)
+                        .any(|c| matches!(c.chars().next(), Some('}' | ':')))
+                })
+                .map(|&(lit, _)| errors::UnusedVariableStringInterp { lit })
+                .collect::<Vec<_>>()
+        };
 
         // First, report fully unused locals.
         for (index, place) in self.checked_places.iter() {
@@ -928,6 +959,10 @@ impl<'a, 'tcx> AssignmentResult<'a, 'tcx> {
 
             let statements = &mut self.assignments[index];
             if statements.is_empty() {
+                if !self.is_local_in_reachable_code(local) {
+                    continue;
+                }
+
                 let sugg = if from_macro {
                     errors::UnusedVariableSugg::NoSugg { span: def_span, name }
                 } else {
@@ -940,7 +975,7 @@ impl<'a, 'tcx> AssignmentResult<'a, 'tcx> {
                     def_span,
                     errors::UnusedVariable {
                         name,
-                        string_interp: maybe_suggest_literal_matching_name(self.body, name),
+                        string_interp: maybe_suggest_literal_matching_name(name),
                         sugg,
                     },
                 );
@@ -977,8 +1012,10 @@ impl<'a, 'tcx> AssignmentResult<'a, 'tcx> {
                     self.checked_places,
                     self.body,
                 ) {
-                    statements.clear();
-                    continue;
+                    statements.retain(|_, access| access.is_direct);
+                    if statements.is_empty() {
+                        continue;
+                    }
                 }
 
                 let typo = maybe_suggest_typo();
@@ -1030,7 +1067,7 @@ impl<'a, 'tcx> AssignmentResult<'a, 'tcx> {
                 spans,
                 errors::UnusedVariable {
                     name,
-                    string_interp: maybe_suggest_literal_matching_name(self.body, name),
+                    string_interp: maybe_suggest_literal_matching_name(name),
                     sugg,
                 },
             );
@@ -1049,23 +1086,30 @@ impl<'a, 'tcx> AssignmentResult<'a, 'tcx> {
 
             let Some((name, decl_span)) = self.checked_places.names[index] else { continue };
 
-            // We have outstanding assignments and with non-trivial drop.
-            // This is probably a drop-guard, so we do not issue a warning there.
-            if maybe_drop_guard(
+            // By convention, underscore-prefixed bindings are explicitly allowed to be unused.
+            if name.as_str().starts_with('_') {
+                continue;
+            }
+
+            let is_maybe_drop_guard = maybe_drop_guard(
                 tcx,
                 self.typing_env,
                 index,
                 &self.ever_dropped,
                 self.checked_places,
                 self.body,
-            ) {
-                continue;
-            }
+            );
 
             // We probed MIR in reverse order for dataflow.
             // We revert the vector to give a consistent order to the user.
-            for (source_info, Access { live, kind }) in statements.into_iter().rev() {
+            for (source_info, Access { live, kind, is_direct }) in statements.into_iter().rev() {
                 if live {
+                    continue;
+                }
+
+                // If this place was dropped and has non-trivial drop,
+                // skip reporting field assignments.
+                if !is_direct && is_maybe_drop_guard {
                     continue;
                 }
 
@@ -1160,7 +1204,7 @@ impl<'tcx> Analysis<'tcx> for MaybeLivePlaces<'_, 'tcx> {
     }
 
     fn apply_primary_statement_effect(
-        &mut self,
+        &self,
         trans: &mut Self::Domain,
         statement: &Statement<'tcx>,
         location: Location,
@@ -1169,7 +1213,7 @@ impl<'tcx> Analysis<'tcx> for MaybeLivePlaces<'_, 'tcx> {
     }
 
     fn apply_primary_terminator_effect<'mir>(
-        &mut self,
+        &self,
         trans: &mut Self::Domain,
         terminator: &'mir Terminator<'tcx>,
         location: Location,
@@ -1179,7 +1223,7 @@ impl<'tcx> Analysis<'tcx> for MaybeLivePlaces<'_, 'tcx> {
     }
 
     fn apply_call_return_effect(
-        &mut self,
+        &self,
         _trans: &mut Self::Domain,
         _block: BasicBlock,
         _return_places: CallReturnPlaces<'_, 'tcx>,

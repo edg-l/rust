@@ -548,9 +548,6 @@ impl server::FreeFunctions for Rustc<'_, '_> {
             Diag::new(self.psess().dcx(), diagnostic.level.to_internal(), message);
         diag.span(MultiSpan::from_spans(diagnostic.spans));
         for child in diagnostic.children {
-            // This message comes from another diagnostic, and we are just reconstructing the
-            // diagnostic, so there's no need for translation.
-            #[allow(rustc::untranslatable_diagnostic)]
             diag.sub(child.level.to_internal(), child.message, MultiSpan::from_spans(child.spans));
         }
         diag.emit();
@@ -749,7 +746,7 @@ impl server::Span for Rustc<'_, '_> {
         let self_loc = self.psess().source_map().lookup_char_pos(first.lo());
         let other_loc = self.psess().source_map().lookup_char_pos(second.lo());
 
-        if self_loc.file.name != other_loc.file.name {
+        if self_loc.file.stable_id != other_loc.file.stable_id {
             return None;
         }
 

@@ -1,7 +1,7 @@
 use edos_rt::io::{sys_read, sys_write};
 
 use crate::io::{self};
-use crate::sys::os::errno;
+use crate::sys::io::errno;
 use crate::sys::{cvt, decode_error_kind};
 
 pub struct Stdin;

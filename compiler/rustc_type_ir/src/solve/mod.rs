@@ -5,7 +5,9 @@ use std::hash::Hash;
 use derive_where::derive_where;
 #[cfg(feature = "nightly")]
 use rustc_macros::{Decodable_NoContext, Encodable_NoContext, HashStable_NoContext};
-use rustc_type_ir_macros::{Lift_Generic, TypeFoldable_Generic, TypeVisitable_Generic};
+use rustc_type_ir_macros::{
+    GenericTypeVisitable, Lift_Generic, TypeFoldable_Generic, TypeVisitable_Generic,
+};
 
 use crate::lang_items::SolverTraitLangItem;
 use crate::search_graph::PathKind;
@@ -33,7 +35,7 @@ pub struct NoSolution;
 /// we're currently typechecking while the `predicate` is some trait bound.
 #[derive_where(Clone, Hash, PartialEq, Debug; I: Interner, P)]
 #[derive_where(Copy; I: Interner, P: Copy)]
-#[derive(TypeVisitable_Generic, TypeFoldable_Generic, Lift_Generic)]
+#[derive(TypeVisitable_Generic, GenericTypeVisitable, TypeFoldable_Generic, Lift_Generic)]
 #[cfg_attr(
     feature = "nightly",
     derive(Decodable_NoContext, Encodable_NoContext, HashStable_NoContext)
@@ -78,8 +80,6 @@ pub enum GoalSource {
     ImplWhereBound,
     /// Const conditions that need to hold for `[const]` alias bounds to hold.
     AliasBoundConstCondition,
-    /// Instantiating a higher-ranked goal and re-proving it.
-    InstantiateHigherRanked,
     /// Predicate required for an alias projection to be well-formed.
     /// This is used in three places:
     /// 1. projecting to an opaque whose hidden type is already registered in
@@ -97,7 +97,7 @@ pub enum GoalSource {
 
 #[derive_where(Clone, Hash, PartialEq, Debug; I: Interner, Goal<I, P>)]
 #[derive_where(Copy; I: Interner, Goal<I, P>: Copy)]
-#[derive(TypeVisitable_Generic, TypeFoldable_Generic)]
+#[derive(TypeVisitable_Generic, GenericTypeVisitable, TypeFoldable_Generic)]
 #[cfg_attr(
     feature = "nightly",
     derive(Decodable_NoContext, Encodable_NoContext, HashStable_NoContext)
@@ -108,6 +108,30 @@ pub struct QueryInput<I: Interner, P> {
 }
 
 impl<I: Interner, P: Eq> Eq for QueryInput<I, P> {}
+
+/// Which trait candidates should be preferred over other candidates? By default, prefer where
+/// bounds over alias bounds. For marker traits, prefer alias bounds over where bounds.
+#[derive(Clone, Copy, Debug)]
+pub enum CandidatePreferenceMode {
+    /// Prefers where bounds over alias bounds
+    Default,
+    /// Prefers alias bounds over where bounds
+    Marker,
+}
+
+impl CandidatePreferenceMode {
+    /// Given `trait_def_id`, which candidate preference mode should be used?
+    pub fn compute<I: Interner>(cx: I, trait_id: I::TraitId) -> CandidatePreferenceMode {
+        let is_sizedness_or_auto_or_default_goal = cx.is_sizedness_trait(trait_id)
+            || cx.trait_is_auto(trait_id)
+            || cx.is_default_trait(trait_id);
+        if is_sizedness_or_auto_or_default_goal {
+            CandidatePreferenceMode::Marker
+        } else {
+            CandidatePreferenceMode::Default
+        }
+    }
+}
 
 /// Possible ways the given goal can be proven.
 #[derive_where(Clone, Copy, Hash, PartialEq, Debug; I: Interner)]
@@ -165,7 +189,7 @@ pub enum CandidateSource<I: Interner> {
     ///     let _y = x.clone();
     /// }
     /// ```
-    AliasBound,
+    AliasBound(AliasBoundKind),
     /// A candidate that is registered only during coherence to represent some
     /// yet-unknown impl that could be produced downstream without violating orphan
     /// rules.
@@ -181,6 +205,15 @@ pub enum ParamEnvSource {
     NonGlobal,
     // Not considered unless there are non-global param-env candidates too.
     Global,
+}
+
+#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
+#[derive(TypeVisitable_Generic, GenericTypeVisitable, TypeFoldable_Generic)]
+pub enum AliasBoundKind {
+    /// Alias bound from the self type of a projection
+    SelfBounds,
+    // Alias bound having recursed on the self type of a projection
+    NonSelfBounds,
 }
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
@@ -204,7 +237,7 @@ pub enum BuiltinImplSource {
 }
 
 #[derive_where(Clone, Copy, Hash, PartialEq, Debug; I: Interner)]
-#[derive(TypeVisitable_Generic, TypeFoldable_Generic)]
+#[derive(TypeVisitable_Generic, GenericTypeVisitable, TypeFoldable_Generic)]
 #[cfg_attr(feature = "nightly", derive(HashStable_NoContext))]
 pub struct Response<I: Interner> {
     pub certainty: Certainty,
@@ -217,7 +250,7 @@ impl<I: Interner> Eq for Response<I> {}
 
 /// Additional constraints returned on success.
 #[derive_where(Clone, Hash, PartialEq, Debug, Default; I: Interner)]
-#[derive(TypeVisitable_Generic, TypeFoldable_Generic)]
+#[derive(TypeVisitable_Generic, GenericTypeVisitable, TypeFoldable_Generic)]
 #[cfg_attr(feature = "nightly", derive(HashStable_NoContext))]
 pub struct ExternalConstraintsData<I: Interner> {
     pub region_constraints: Vec<ty::OutlivesPredicate<I, I::GenericArg>>,
@@ -236,7 +269,7 @@ impl<I: Interner> ExternalConstraintsData<I> {
 }
 
 #[derive_where(Clone, Hash, PartialEq, Debug, Default; I: Interner)]
-#[derive(TypeVisitable_Generic, TypeFoldable_Generic)]
+#[derive(TypeVisitable_Generic, GenericTypeVisitable, TypeFoldable_Generic)]
 #[cfg_attr(feature = "nightly", derive(HashStable_NoContext))]
 pub struct NestedNormalizationGoals<I: Interner>(pub Vec<(GoalSource, Goal<I, I::Predicate>)>);
 

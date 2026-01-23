@@ -2,6 +2,23 @@
 //! "Go to file" feature to silently ignore all files in the module, probably
 //! because it assumes that "build" is a build-output directory.
 //! See <https://github.com/rust-lang/rust/pull/134365>.
+//!
+//! ## The `let this = self;` idiom (LET_THIS_SELF)
+//!
+//! Throughout MIR building there are several places where a `Builder` method
+//! needs to borrow `self`, and then re-expose it to a closure as `|this|`.
+//!
+//! In complex builder methods, potentially with multiple levels of nesting, it
+//! would thus become necessary to mentally keep track of whether the builder
+//! is `self` (at the top level) or `this` (nested in a closure), or to replace
+//! one with the other when moving code in or out of a closure.
+//!
+//! (The borrow checker will prevent incorrect usage, but having to go back and
+//! satisfy the borrow checker still creates contributor friction.)
+//!
+//! To reduce that friction, some builder methods therefore start with
+//! `let this = self;` or similar, allowing subsequent code to uniformly refer
+//! to the builder as `this` (and never `self`), even when not nested.
 
 use itertools::Itertools;
 use rustc_abi::{ExternAbi, FieldIdx};
@@ -21,14 +38,14 @@ use rustc_infer::infer::{InferCtxt, TyCtxtInferExt};
 use rustc_middle::hir::place::PlaceBase as HirPlaceBase;
 use rustc_middle::middle::region;
 use rustc_middle::mir::*;
-use rustc_middle::thir::{self, ExprId, LintLevel, LocalVarId, Param, ParamId, PatKind, Thir};
+use rustc_middle::thir::{self, ExprId, LocalVarId, Param, ParamId, PatKind, Thir};
 use rustc_middle::ty::{self, ScalarInt, Ty, TyCtxt, TypeVisitableExt, TypingMode};
 use rustc_middle::{bug, span_bug};
 use rustc_session::lint;
 use rustc_span::{Span, Symbol, sym};
 
 use crate::builder::expr::as_place::PlaceBuilder;
-use crate::builder::scope::DropKind;
+use crate::builder::scope::{DropKind, LintLevel};
 use crate::errors;
 
 pub(crate) fn closure_saved_names_of_captured_variables<'tcx>(
@@ -47,9 +64,11 @@ pub(crate) fn closure_saved_names_of_captured_variables<'tcx>(
         .collect()
 }
 
-/// Create the MIR for a given `DefId`, including unreachable code. Do not call
-/// this directly; instead use the cached version via `mir_built`.
-pub fn build_mir<'tcx>(tcx: TyCtxt<'tcx>, def: LocalDefId) -> Body<'tcx> {
+/// Create the MIR for a given `DefId`, including unreachable code.
+///
+/// This is the implementation of hook `build_mir_inner_impl`, which should only
+/// be called by the query `mir_built`.
+pub(crate) fn build_mir_inner_impl<'tcx>(tcx: TyCtxt<'tcx>, def: LocalDefId) -> Body<'tcx> {
     tcx.ensure_done().thir_abstract_const(def);
     if let Err(e) = tcx.ensure_ok().check_match(def) {
         return construct_error(tcx, def, e);
@@ -821,7 +840,6 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 self.parent_module,
                 self.infcx.typing_env(self.param_env),
             );
-
             if !ty_is_inhabited {
                 // Unreachable code warnings are already emitted during type checking.
                 // However, during type checking, full type information is being
@@ -832,7 +850,23 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 // uninhabited types (e.g. empty enums). The check above is used so
                 // that we do not emit the same warning twice if the uninhabited type
                 // is indeed `!`.
-                if !ty.is_never() {
+                if !ty.is_never()
+                    && matches!(self.tcx.def_kind(self.def_id), DefKind::Fn | DefKind::AssocFn)
+                // check if the function's return type is inhabited
+                // this was added here because of this regression
+                // https://github.com/rust-lang/rust/issues/149571
+                    && self
+                        .tcx
+                        .fn_sig(self.def_id)
+                        .instantiate_identity()
+                        .skip_binder()
+                        .output()
+                        .is_inhabited_from(
+                            self.tcx,
+                            self.parent_module,
+                            self.infcx.typing_env(self.param_env),
+                        )
+                {
                     lints.push((target_bb, ty, term.source_info.span));
                 }
 
@@ -844,20 +878,46 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             }
         }
 
+        /// Starting at a target unreachable block, find some user code to lint as unreachable
+        fn find_unreachable_code_from(
+            bb: BasicBlock,
+            bbs: &IndexVec<BasicBlock, BasicBlockData<'_>>,
+        ) -> Option<(SourceInfo, &'static str)> {
+            let bb = &bbs[bb];
+            for stmt in &bb.statements {
+                match &stmt.kind {
+                    // Ignore the implicit `()` return place assignment for unit functions/blocks
+                    StatementKind::Assign(box (_, Rvalue::Use(Operand::Constant(const_))))
+                        if const_.ty().is_unit() =>
+                    {
+                        continue;
+                    }
+                    StatementKind::StorageLive(_) | StatementKind::StorageDead(_) => {
+                        continue;
+                    }
+                    StatementKind::FakeRead(..) => return Some((stmt.source_info, "definition")),
+                    _ => return Some((stmt.source_info, "expression")),
+                }
+            }
+
+            let term = bb.terminator();
+            match term.kind {
+                // No user code in this bb, and our goto target may be reachable via other paths
+                TerminatorKind::Goto { .. } | TerminatorKind::Return => None,
+                _ => Some((term.source_info, "expression")),
+            }
+        }
+
         for (target_bb, orig_ty, orig_span) in lints {
             if orig_span.in_external_macro(self.tcx.sess.source_map()) {
                 continue;
             }
-            let target_bb = &self.cfg.basic_blocks[target_bb];
-            let (target_loc, descr) = target_bb
-                .statements
-                .iter()
-                .find_map(|stmt| match stmt.kind {
-                    StatementKind::StorageLive(_) | StatementKind::StorageDead(_) => None,
-                    StatementKind::FakeRead(..) => Some((stmt.source_info, "definition")),
-                    _ => Some((stmt.source_info, "expression")),
-                })
-                .unwrap_or_else(|| (target_bb.terminator().source_info, "expression"));
+
+            let Some((target_loc, descr)) =
+                find_unreachable_code_from(target_bb, &self.cfg.basic_blocks)
+            else {
+                continue;
+            };
             let lint_root = self.source_scopes[target_loc.scope]
                 .local_data
                 .as_ref()

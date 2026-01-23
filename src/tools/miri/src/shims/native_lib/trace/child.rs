@@ -5,7 +5,7 @@ use std::rc::Rc;
 use ipc_channel::ipc;
 use nix::sys::{mman, ptrace, signal};
 use nix::unistd;
-use rustc_const_eval::interpret::InterpResult;
+use rustc_const_eval::interpret::{InterpResult, interp_ok};
 
 use super::CALLBACK_STACK_SIZE;
 use super::messages::{Confirmation, StartFfiInfo, TraceRequest};
@@ -58,16 +58,16 @@ impl Supervisor {
     /// Performs an arbitrary FFI call, enabling tracing from the supervisor.
     /// As this locks the supervisor via a mutex, no other threads may enter FFI
     /// until this function returns.
-    pub fn do_ffi<'tcx>(
+    pub fn do_ffi<'tcx, T>(
         alloc: &Rc<RefCell<IsolatedAlloc>>,
-        f: impl FnOnce() -> InterpResult<'tcx, crate::ImmTy<'tcx>>,
-    ) -> InterpResult<'tcx, (crate::ImmTy<'tcx>, Option<MemEvents>)> {
+        f: impl FnOnce() -> T,
+    ) -> InterpResult<'tcx, (T, Option<MemEvents>)> {
         let mut sv_guard = SUPERVISOR.lock().unwrap();
         // If the supervisor is not initialised for whatever reason, fast-return.
         // As a side-effect, even on platforms where ptracing
         // is not implemented, we enforce that only one FFI call
         // happens at a time.
-        let Some(sv) = sv_guard.as_mut() else { return f().map(|v| (v, None)) };
+        let Some(sv) = sv_guard.as_mut() else { return interp_ok((f(), None)) };
 
         // Get pointers to all the pages the supervisor must allow accesses in
         // and prepare the callback stack.
@@ -147,7 +147,7 @@ impl Supervisor {
             })
             .ok();
 
-        res.map(|v| (v, events))
+        interp_ok((res, events))
     }
 }
 
@@ -228,9 +228,10 @@ pub unsafe fn init_sv() -> Result<(), SvInitError> {
                 match init {
                     // The "Ok" case means that we couldn't ptrace.
                     Ok(e) => return Err(e),
-                    Err(p) => {
+                    Err(_p) => {
                         eprintln!(
-                            "Supervisor process panicked!\n{p:?}\n\nTry running again without using the native-lib tracer."
+                            "Supervisor process panicked!\n\"
+                            Try running again without `-Zmiri-native-lib-enable-tracing`."
                         );
                         std::process::exit(1);
                     }

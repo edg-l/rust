@@ -28,7 +28,7 @@ pub(crate) enum DivergingFallbackBehavior {
     ToNever,
 }
 
-impl<'db> InferenceContext<'db> {
+impl<'db> InferenceContext<'_, 'db> {
     pub(super) fn type_inference_fallback(&mut self) {
         debug!(
             "type-inference-fallback start obligations: {:#?}",
@@ -151,8 +151,8 @@ impl<'db> InferenceContext<'db> {
         // type, `?T` is not considered unsolved, but `?I` is. The
         // same is true for float variables.)
         let fallback = match ty.kind() {
-            TyKind::Infer(rustc_type_ir::IntVar(_)) => self.types.i32,
-            TyKind::Infer(rustc_type_ir::FloatVar(_)) => self.types.f64,
+            TyKind::Infer(rustc_type_ir::IntVar(_)) => self.types.types.i32,
+            TyKind::Infer(rustc_type_ir::FloatVar(_)) => self.types.types.f64,
             _ => match diverging_fallback.get(&ty) {
                 Some(&fallback_ty) => fallback_ty,
                 None => return false,
@@ -160,7 +160,7 @@ impl<'db> InferenceContext<'db> {
         };
         debug!("fallback_if_possible(ty={:?}): defaulting to `{:?}`", ty, fallback);
 
-        self.demand_eqtype(ty, fallback);
+        _ = self.demand_eqtype_fixme_no_diag(ty, fallback);
         true
     }
 
@@ -324,7 +324,7 @@ impl<'db> InferenceContext<'db> {
             FxHashMap::with_capacity_and_hasher(diverging_vids.len(), FxBuildHasher);
 
         for &diverging_vid in &diverging_vids {
-            let diverging_ty = Ty::new_var(self.table.interner, diverging_vid);
+            let diverging_ty = Ty::new_var(self.interner(), diverging_vid);
             let root_vid = self.table.infer_ctxt.root_var(diverging_vid);
             let can_reach_non_diverging = Dfs::new(&coercion_graph, root_vid.as_u32().into())
                 .iter(&coercion_graph)
@@ -337,7 +337,7 @@ impl<'db> InferenceContext<'db> {
             match behavior {
                 DivergingFallbackBehavior::ToUnit => {
                     debug!("fallback to () - legacy: {:?}", diverging_vid);
-                    fallback_to(self.types.unit);
+                    fallback_to(self.types.types.unit);
                 }
                 DivergingFallbackBehavior::ContextDependent => {
                     // FIXME: rustc does the following, but given this is only relevant when the unstable
@@ -368,14 +368,14 @@ impl<'db> InferenceContext<'db> {
                     //     // set, see the relationship finding module in
                     //     // compiler/rustc_trait_selection/src/traits/relationships.rs.
                     //     debug!("fallback to () - found trait and projection: {:?}", diverging_vid);
-                    //     fallback_to(self.types.unit);
+                    //     fallback_to(self.types.types.unit);
                     // }
                     if can_reach_non_diverging {
                         debug!("fallback to () - reached non-diverging: {:?}", diverging_vid);
-                        fallback_to(self.types.unit);
+                        fallback_to(self.types.types.unit);
                     } else {
                         debug!("fallback to ! - all diverging: {:?}", diverging_vid);
-                        fallback_to(self.types.never);
+                        fallback_to(self.types.types.never);
                     }
                 }
                 DivergingFallbackBehavior::ToNever => {
@@ -383,7 +383,7 @@ impl<'db> InferenceContext<'db> {
                         "fallback to ! - `rustc_never_type_mode = \"fallback_to_never\")`: {:?}",
                         diverging_vid
                     );
-                    fallback_to(self.types.never);
+                    fallback_to(self.types.types.never);
                 }
             }
         }

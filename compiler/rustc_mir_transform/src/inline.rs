@@ -1,10 +1,10 @@
 //! Inlining pass for MIR functions.
 
-use std::assert_matches::debug_assert_matches;
 use std::iter;
 use std::ops::{Range, RangeFrom};
 
 use rustc_abi::{ExternAbi, FieldIdx};
+use rustc_data_structures::debug_assert_matches;
 use rustc_hir::attrs::{InlineAttr, OptimizeAttr};
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::DefId;
@@ -245,7 +245,7 @@ impl<'tcx> Inliner<'tcx> for ForceInliner<'tcx> {
     fn on_inline_failure(&self, callsite: &CallSite<'tcx>, reason: &'static str) {
         let tcx = self.tcx();
         let InlineAttr::Force { attr_span, reason: justification } =
-            tcx.codegen_fn_attrs(callsite.callee.def_id()).inline
+            tcx.codegen_instance_attrs(callsite.callee.def).inline
         else {
             bug!("called on item without required inlining");
         };
@@ -603,7 +603,8 @@ fn try_inlining<'tcx, I: Inliner<'tcx>>(
     let tcx = inliner.tcx();
     check_mir_is_available(inliner, caller_body, callsite.callee)?;
 
-    let callee_attrs = tcx.codegen_fn_attrs(callsite.callee.def_id());
+    let callee_attrs = tcx.codegen_instance_attrs(callsite.callee.def);
+    let callee_attrs = callee_attrs.as_ref();
     check_inline::is_inline_valid_on_fn(tcx, callsite.callee.def_id())?;
     check_codegen_attributes(inliner, callsite, callee_attrs)?;
     inliner.check_codegen_attributes_extra(callee_attrs)?;
@@ -634,7 +635,7 @@ fn try_inlining<'tcx, I: Inliner<'tcx>>(
 
     // Normally, this shouldn't be required, but trait normalization failure can create a
     // validation ICE.
-    if !validate_types(tcx, inliner.typing_env(), &callee_body, &caller_body).is_empty() {
+    if !validate_types(tcx, inliner.typing_env(), &callee_body, caller_body).is_empty() {
         debug!("failed to validate callee body");
         return Err("implementation limitation -- callee body failed validation");
     }
@@ -774,8 +775,11 @@ fn check_mir_is_available<'tcx, I: Inliner<'tcx>>(
     {
         // If we know for sure that the function we're calling will itself try to
         // call us, then we avoid inlining that function.
-        if inliner.tcx().mir_callgraph_cyclic(caller_def_id.expect_local()).contains(&callee_def_id)
-        {
+        let Some(cyclic_callees) = inliner.tcx().mir_callgraph_cyclic(caller_def_id.expect_local())
+        else {
+            return Err("call graph cycle detection bailed due to recursion limit");
+        };
+        if cyclic_callees.contains(&callee_def_id) {
             debug!("query cycle avoidance");
             return Err("caller might be reachable from callee");
         }
@@ -817,7 +821,7 @@ fn check_codegen_attributes<'tcx, I: Inliner<'tcx>>(
     }
 
     let codegen_fn_attrs = tcx.codegen_fn_attrs(inliner.caller_def_id());
-    if callee_attrs.no_sanitize != codegen_fn_attrs.no_sanitize {
+    if callee_attrs.sanitizers != codegen_fn_attrs.sanitizers {
         return Err("incompatible sanitizer set");
     }
 

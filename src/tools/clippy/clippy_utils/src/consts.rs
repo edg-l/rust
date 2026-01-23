@@ -2,17 +2,21 @@
 //!
 //! This cannot use rustc's const eval, aka miri, as arbitrary HIR expressions cannot be lowered to
 //! executable MIR bodies, so we have to do this instead.
-#![allow(clippy::float_cmp)]
+#![expect(clippy::float_cmp)]
 
+use crate::res::MaybeDef;
 use crate::source::{SpanRangeExt, walk_span_to_context};
-use crate::{clip, is_direct_expn_of, paths, sext, sym, unsext};
+use crate::{clip, is_direct_expn_of, sext, sym, unsext};
 
 use rustc_abi::Size;
 use rustc_apfloat::Float;
 use rustc_apfloat::ieee::{Half, Quad};
 use rustc_ast::ast::{LitFloatType, LitKind};
 use rustc_hir::def::{DefKind, Res};
-use rustc_hir::{BinOpKind, Block, ConstBlock, Expr, ExprKind, HirId, PatExpr, PatExprKind, QPath, TyKind, UnOp};
+use rustc_hir::{
+    BinOpKind, Block, ConstArgKind, ConstBlock, ConstItemRhs, Expr, ExprKind, HirId, PatExpr, PatExprKind, QPath,
+    TyKind, UnOp,
+};
 use rustc_lexer::{FrontmatterAllowed, tokenize};
 use rustc_lint::LateContext;
 use rustc_middle::mir::ConstValue;
@@ -50,15 +54,15 @@ pub enum Constant {
     /// `true` or `false`.
     Bool(bool),
     /// An array of constants.
-    Vec(Vec<Constant>),
+    Vec(Vec<Self>),
     /// Also an array, but with only one constant, repeated N times.
-    Repeat(Box<Constant>, u64),
+    Repeat(Box<Self>, u64),
     /// A tuple of constants.
-    Tuple(Vec<Constant>),
+    Tuple(Vec<Self>),
     /// A raw pointer.
     RawPtr(u128),
     /// A reference
-    Ref(Box<Constant>),
+    Ref(Box<Self>),
     /// A literal with syntax error.
     Err,
 }
@@ -574,7 +578,6 @@ impl<'tcx> ConstEvalCtxt<'tcx> {
                     Some(val)
                 }
             },
-            PatExprKind::ConstBlock(ConstBlock { body, .. }) => self.expr(self.tcx.hir_body(*body).value),
             PatExprKind::Path(qpath) => self.qpath(qpath, pat_expr.hir_id),
         }
     }
@@ -805,10 +808,12 @@ impl<'tcx> ConstEvalCtxt<'tcx> {
                                 | sym::i128_legacy_const_max
                         )
                     ) || self.tcx.opt_parent(did).is_some_and(|parent| {
-                        paths::F16_CONSTS.matches(&self.tcx, parent)
-                            || paths::F32_CONSTS.matches(&self.tcx, parent)
-                            || paths::F64_CONSTS.matches(&self.tcx, parent)
-                            || paths::F128_CONSTS.matches(&self.tcx, parent)
+                        matches!(
+                            parent.opt_diag_name(&self.tcx),
+                            Some(
+                                sym::f16_consts_mod | sym::f32_consts_mod | sym::f64_consts_mod | sym::f128_consts_mod
+                            )
+                        )
                     })) =>
             {
                 did
@@ -1128,4 +1133,21 @@ pub fn integer_const(cx: &LateContext<'_>, expr: &Expr<'_>, ctxt: SyntaxContext)
 #[inline]
 pub fn is_zero_integer_const(cx: &LateContext<'_>, expr: &Expr<'_>, ctxt: SyntaxContext) -> bool {
     integer_const(cx, expr, ctxt) == Some(0)
+}
+
+pub fn const_item_rhs_to_expr<'tcx>(tcx: TyCtxt<'tcx>, ct_rhs: ConstItemRhs<'tcx>) -> Option<&'tcx Expr<'tcx>> {
+    match ct_rhs {
+        ConstItemRhs::Body(body_id) => Some(tcx.hir_body(body_id).value),
+        ConstItemRhs::TypeConst(const_arg) => match const_arg.kind {
+            ConstArgKind::Anon(anon) => Some(tcx.hir_body(anon.body).value),
+            ConstArgKind::Struct(..)
+            | ConstArgKind::Tup(..)
+            | ConstArgKind::Literal(..)
+            | ConstArgKind::TupleCall(..)
+            | ConstArgKind::Array(..)
+            | ConstArgKind::Path(_)
+            | ConstArgKind::Error(..)
+            | ConstArgKind::Infer(..) => None,
+        },
+    }
 }

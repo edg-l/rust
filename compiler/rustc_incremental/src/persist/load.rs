@@ -10,8 +10,8 @@ use rustc_middle::dep_graph::{DepGraph, DepsType, SerializedDepGraph, WorkProduc
 use rustc_middle::query::on_disk_cache::OnDiskCache;
 use rustc_serialize::Decodable;
 use rustc_serialize::opaque::MemDecoder;
-use rustc_session::Session;
 use rustc_session::config::IncrementalStateAssertion;
+use rustc_session::{Session, StableCrateId};
 use rustc_span::Symbol;
 use tracing::{debug, warn};
 
@@ -91,10 +91,7 @@ fn delete_dirty_work_product(sess: &Session, swp: SerializedWorkProduct) {
     work_product::delete_workproduct_files(sess, &swp.work_product);
 }
 
-fn load_dep_graph(
-    sess: &Session,
-    deps: &DepsType,
-) -> LoadResult<(Arc<SerializedDepGraph>, WorkProductMap)> {
+fn load_dep_graph(sess: &Session) -> LoadResult<(Arc<SerializedDepGraph>, WorkProductMap)> {
     let prof = sess.prof.clone();
 
     if sess.opts.incremental.is_none() {
@@ -174,7 +171,7 @@ fn load_dep_graph(
                 return LoadResult::DataOutOfDate;
             }
 
-            let dep_graph = SerializedDepGraph::decode::<DepsType>(&mut decoder, deps);
+            let dep_graph = SerializedDepGraph::decode::<DepsType>(&mut decoder);
 
             LoadResult::Ok { data: (dep_graph, prev_work_products) }
         }
@@ -208,11 +205,15 @@ pub fn load_query_result_cache(sess: &Session) -> Option<OnDiskCache> {
 
 /// Setups the dependency graph by loading an existing graph from disk and set up streaming of a
 /// new graph to an incremental session directory.
-pub fn setup_dep_graph(sess: &Session, crate_name: Symbol, deps: &DepsType) -> DepGraph {
+pub fn setup_dep_graph(
+    sess: &Session,
+    crate_name: Symbol,
+    stable_crate_id: StableCrateId,
+) -> DepGraph {
     // `load_dep_graph` can only be called after `prepare_session_directory`.
-    prepare_session_directory(sess, crate_name);
+    prepare_session_directory(sess, crate_name, stable_crate_id);
 
-    let res = sess.opts.build_dep_graph().then(|| load_dep_graph(sess, deps));
+    let res = sess.opts.build_dep_graph().then(|| load_dep_graph(sess));
 
     if sess.opts.incremental.is_some() {
         sess.time("incr_comp_garbage_collect_session_directories", || {

@@ -224,7 +224,7 @@ enum PatState<'a> {
     /// A std enum we know won't be extended. Tracks the states of each variant separately.
     ///
     /// This is not used for `Option` since it uses the current pattern to track its state.
-    StdEnum(&'a mut [PatState<'a>]),
+    StdEnum(&'a mut [Self]),
     /// Either the initial state for a pattern or a non-std enum. There is currently no need to
     /// distinguish these cases.
     ///
@@ -373,7 +373,10 @@ impl<'a> PatState<'a> {
             },
 
             // Patterns for things which can only contain a single sub-pattern.
-            PatKind::Binding(_, _, _, Some(pat)) | PatKind::Ref(pat, _) | PatKind::Box(pat) | PatKind::Deref(pat) => {
+            PatKind::Binding(_, _, _, Some(pat))
+            | PatKind::Ref(pat, _, _)
+            | PatKind::Box(pat)
+            | PatKind::Deref(pat) => {
                 self.add_pat(cx, pat)
             },
             PatKind::Tuple([sub_pat], pos)

@@ -70,8 +70,11 @@ pub(crate) fn complete_record_expr_fields(
         }
         _ => {
             let missing_fields = ctx.sema.record_literal_missing_fields(record_expr);
+            let update_exists = record_expr
+                .record_expr_field_list()
+                .is_some_and(|list| list.dotdot_token().is_some());
 
-            if !missing_fields.is_empty() {
+            if !missing_fields.is_empty() && !update_exists {
                 cov_mark::hit!(functional_update_field);
                 add_default_update(acc, ctx, ty);
             }
@@ -135,10 +138,7 @@ fn complete_fields(
                 receiver: None,
                 receiver_ty: None,
                 kind: DotAccessKind::Field { receiver_is_ambiguous_float_literal: false },
-                ctx: DotAccessExprCtx {
-                    in_block_expr: false,
-                    in_breakable: crate::context::BreakableKind::None,
-                },
+                ctx: DotAccessExprCtx { in_block_expr: false, in_breakable: None },
             },
             None,
             field,
@@ -176,6 +176,33 @@ fn create_foo(foo_desc: &FooDesc) -> () { () }
 
 fn baz() {
     let foo = create_foo(&FooDesc { bar: ${1:()} }$0);
+}
+            "#,
+        )
+    }
+
+    #[test]
+    fn literal_struct_completion_shorthand() {
+        check_edit(
+            "FooDesc{}",
+            r#"
+struct FooDesc { pub bar: bool, n: i32 }
+
+fn create_foo(foo_desc: &FooDesc) -> () { () }
+
+fn baz() {
+    let bar = true;
+    let foo = create_foo(&$0);
+}
+            "#,
+            r#"
+struct FooDesc { pub bar: bool, n: i32 }
+
+fn create_foo(foo_desc: &FooDesc) -> () { () }
+
+fn baz() {
+    let bar = true;
+    let foo = create_foo(&FooDesc { bar$1, n: ${2:()} }$0);
 }
             "#,
         )

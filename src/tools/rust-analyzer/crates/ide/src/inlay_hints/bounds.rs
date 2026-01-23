@@ -13,7 +13,7 @@ use crate::{
 pub(super) fn hints(
     acc: &mut Vec<InlayHint>,
     famous_defs @ FamousDefs(sema, _): &FamousDefs<'_, '_>,
-    config: &InlayHintsConfig,
+    config: &InlayHintsConfig<'_>,
     params: ast::GenericParamList,
 ) -> Option<()> {
     if !config.sized_bound {
@@ -143,7 +143,7 @@ fn foo<T>() {}
                                             file_id: FileId(
                                                 1,
                                             ),
-                                            range: 446..451,
+                                            range: 470..475,
                                         },
                                     ),
                                 ),

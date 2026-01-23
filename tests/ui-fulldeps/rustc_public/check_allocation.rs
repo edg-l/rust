@@ -20,7 +20,7 @@ extern crate rustc_interface;
 extern crate rustc_public;
 
 use std::ascii::Char;
-use std::assert_matches::assert_matches;
+use std::assert_matches;
 use std::cmp::{max, min};
 use std::collections::HashMap;
 use std::ffi::CStr;
@@ -40,11 +40,11 @@ const CRATE_NAME: &str = "input";
 fn test_stable_mir() -> ControlFlow<()> {
     // Find items in the local crate.
     let items = rustc_public::all_local_items();
-    check_foo(*get_item(&items, (ItemKind::Static, "FOO")).unwrap());
-    check_bar(*get_item(&items, (ItemKind::Static, "BAR")).unwrap());
-    check_len(*get_item(&items, (ItemKind::Static, "LEN")).unwrap());
-    check_cstr(*get_item(&items, (ItemKind::Static, "C_STR")).unwrap());
-    check_other_consts(*get_item(&items, (ItemKind::Fn, "other_consts")).unwrap());
+    check_foo(*get_item(&items, (ItemKind::Static, "input::FOO")).unwrap());
+    check_bar(*get_item(&items, (ItemKind::Static, "input::BAR")).unwrap());
+    check_len(*get_item(&items, (ItemKind::Static, "input::LEN")).unwrap());
+    check_cstr(*get_item(&items, (ItemKind::Static, "input::C_STR")).unwrap());
+    check_other_consts(*get_item(&items, (ItemKind::Fn, "input::other_consts")).unwrap());
     ControlFlow::Continue(())
 }
 

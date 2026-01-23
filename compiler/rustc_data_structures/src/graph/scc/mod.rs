@@ -8,7 +8,6 @@
 //! Typical examples would include: minimum element in SCC, maximum element
 //! reachable from it, etc.
 
-use std::assert_matches::debug_assert_matches;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::Range;
@@ -16,6 +15,7 @@ use std::ops::Range;
 use rustc_index::{Idx, IndexSlice, IndexVec};
 use tracing::{debug, instrument, trace};
 
+use crate::debug_assert_matches;
 use crate::fx::FxHashSet;
 use crate::graph::vec_graph::VecGraph;
 use crate::graph::{DirectedGraph, NumEdges, Successors};
@@ -289,7 +289,7 @@ enum NodeState<N, S, A: Annotation> {
 #[derive(Copy, Clone, Debug)]
 enum WalkReturn<S, A: Annotation> {
     /// The walk found a cycle, but the entire component is not known to have
-    /// been fully walked yet. We only know the minimum depth of  this
+    /// been fully walked yet. We only know the minimum depth of this
     /// component in a minimum spanning tree of the graph. This component
     /// is tentatively represented by the state of the first node of this
     /// cycle we met, which is at `min_depth`.

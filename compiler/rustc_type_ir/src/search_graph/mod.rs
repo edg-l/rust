@@ -23,7 +23,7 @@ use derive_where::derive_where;
 #[cfg(feature = "nightly")]
 use rustc_macros::{Decodable_NoContext, Encodable_NoContext, HashStable_NoContext};
 use rustc_type_ir::data_structures::HashMap;
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, trace};
 
 mod stack;
 use stack::{Stack, StackDepth, StackEntry};
@@ -40,6 +40,7 @@ pub use global_cache::GlobalCache;
 pub trait Cx: Copy {
     type Input: Debug + Eq + Hash + Copy;
     type Result: Debug + Eq + Hash + Copy;
+    type AmbiguityInfo: Debug + Eq + Hash + Copy;
 
     type DepNodeIndex;
     type Tracked<T: Debug + Clone>: Debug;
@@ -96,11 +97,13 @@ pub trait Delegate: Sized {
         input: <Self::Cx as Cx>::Input,
     ) -> <Self::Cx as Cx>::Result;
 
-    fn is_ambiguous_result(result: <Self::Cx as Cx>::Result) -> bool;
+    fn is_ambiguous_result(
+        result: <Self::Cx as Cx>::Result,
+    ) -> Option<<Self::Cx as Cx>::AmbiguityInfo>;
     fn propagate_ambiguity(
         cx: Self::Cx,
         for_input: <Self::Cx as Cx>::Input,
-        from_result: <Self::Cx as Cx>::Result,
+        ambiguity_info: <Self::Cx as Cx>::AmbiguityInfo,
     ) -> <Self::Cx as Cx>::Result;
 
     fn compute_goal(
@@ -913,15 +916,16 @@ impl<D: Delegate<Cx = X>, X: Cx> SearchGraph<D> {
 /// heads from the stack. This may not necessarily mean that we've actually
 /// reached a fixpoint for that cycle head, which impacts the way we rebase
 /// provisional cache entries.
-enum RebaseReason {
+#[derive_where(Debug; X: Cx)]
+enum RebaseReason<X: Cx> {
     NoCycleUsages,
-    Ambiguity,
+    Ambiguity(X::AmbiguityInfo),
     Overflow,
     /// We've actually reached a fixpoint.
     ///
     /// This either happens in the first evaluation step for the cycle head.
     /// In this case the used provisional result depends on the cycle `PathKind`.
-    /// We store this path kind to check whether the the provisional cache entry
+    /// We store this path kind to check whether the provisional cache entry
     /// we're rebasing relied on the same cycles.
     ///
     /// In later iterations cycles always return `stack_entry.provisional_result`
@@ -947,11 +951,12 @@ impl<D: Delegate<Cx = X>, X: Cx> SearchGraph<D, X> {
     /// cache entries to also be ambiguous. This causes some undesirable ambiguity for nested
     /// goals whose result doesn't actually depend on this cycle head, but that's acceptable
     /// to me.
+    #[instrument(level = "trace", skip(self, cx))]
     fn rebase_provisional_cache_entries(
         &mut self,
         cx: X,
         stack_entry: &StackEntry<X>,
-        rebase_reason: RebaseReason,
+        rebase_reason: RebaseReason<X>,
     ) {
         let popped_head_index = self.stack.next_index();
         #[allow(rustc::potential_query_instability)]
@@ -966,11 +971,8 @@ impl<D: Delegate<Cx = X>, X: Cx> SearchGraph<D, X> {
                 let popped_head = if heads.highest_cycle_head_index() == popped_head_index {
                     heads.remove_highest_cycle_head()
                 } else {
+                    debug_assert!(heads.highest_cycle_head_index() < popped_head_index);
                     return true;
-                };
-
-                let Some(new_highest_head_index) = heads.opt_highest_cycle_head_index() else {
-                    return false;
                 };
 
                 // We're rebasing an entry `e` over a head `p`. This head
@@ -1033,8 +1035,8 @@ impl<D: Delegate<Cx = X>, X: Cx> SearchGraph<D, X> {
                         // is not actually equal to the final provisional result. We
                         // need to discard the provisional cache entry in this case.
                         RebaseReason::NoCycleUsages => return false,
-                        RebaseReason::Ambiguity => {
-                            *result = D::propagate_ambiguity(cx, input, *result);
+                        RebaseReason::Ambiguity(info) => {
+                            *result = D::propagate_ambiguity(cx, input, info);
                         }
                         RebaseReason::Overflow => *result = D::fixpoint_overflow_result(cx, input),
                         RebaseReason::ReachedFixpoint(None) => {}
@@ -1046,6 +1048,10 @@ impl<D: Delegate<Cx = X>, X: Cx> SearchGraph<D, X> {
                     };
                 }
 
+                let Some(new_highest_head_index) = heads.opt_highest_cycle_head_index() else {
+                    return false;
+                };
+
                 // We now care about the path from the next highest cycle head to the
                 // provisional cache entry.
                 *path_from_head = path_from_head.extend(Self::cycle_path_kind(
@@ -1053,6 +1059,8 @@ impl<D: Delegate<Cx = X>, X: Cx> SearchGraph<D, X> {
                     stack_entry.step_kind_from_parent,
                     new_highest_head_index,
                 ));
+
+                trace!(?input, ?entry, "rebased provisional cache entry");
 
                 true
             });
@@ -1268,6 +1276,7 @@ impl<D: Delegate<Cx = X>, X: Cx> SearchGraph<D, X> {
     }
 
     /// Whether we've reached a fixpoint when evaluating a cycle head.
+    #[instrument(level = "trace", skip(self, stack_entry), ret)]
     fn reached_fixpoint(
         &mut self,
         stack_entry: &StackEntry<X>,
@@ -1355,8 +1364,12 @@ impl<D: Delegate<Cx = X>, X: Cx> SearchGraph<D, X> {
             // As we only get to this branch if we haven't yet reached a fixpoint,
             // we also taint all provisional cache entries which depend on the
             // current goal.
-            if D::is_ambiguous_result(result) {
-                self.rebase_provisional_cache_entries(cx, &stack_entry, RebaseReason::Ambiguity);
+            if let Some(info) = D::is_ambiguous_result(result) {
+                self.rebase_provisional_cache_entries(
+                    cx,
+                    &stack_entry,
+                    RebaseReason::Ambiguity(info),
+                );
                 return EvaluationResult::finalize(stack_entry, encountered_overflow, result);
             };
 
@@ -1371,7 +1384,8 @@ impl<D: Delegate<Cx = X>, X: Cx> SearchGraph<D, X> {
             }
 
             // Clear all provisional cache entries which depend on a previous provisional
-            // result of this goal and rerun.
+            // result of this goal and rerun. This does not remove goals which accessed this
+            // goal without depending on its result.
             self.clear_dependent_provisional_results_for_rerun();
 
             debug!(?result, "fixpoint changed provisional results");
@@ -1391,7 +1405,12 @@ impl<D: Delegate<Cx = X>, X: Cx> SearchGraph<D, X> {
                 // similar to the previous iterations when reevaluating, it's better
                 // for caching if the reevaluation also starts out with `false`.
                 encountered_overflow: false,
-                usages: None,
+                // We keep provisional cache entries around if they used this goal
+                // without depending on its result.
+                //
+                // We still need to drop or rebase these cache entries once we've
+                // finished evaluating this goal.
+                usages: Some(HeadUsages::default()),
                 candidate_usages: None,
             });
         }

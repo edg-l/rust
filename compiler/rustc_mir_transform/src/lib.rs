@@ -1,11 +1,9 @@
 // tidy-alphabetical-start
-#![feature(array_windows)]
 #![feature(assert_matches)]
 #![feature(box_patterns)]
 #![feature(const_type_name)]
 #![feature(cow_is_borrowed)]
 #![feature(file_buffered)]
-#![feature(gen_blocks)]
 #![feature(if_let_guard)]
 #![feature(impl_trait_in_assoc_type)]
 #![feature(try_blocks)]
@@ -30,7 +28,6 @@ use rustc_middle::mir::{
 use rustc_middle::ty::{self, TyCtxt, TypeVisitableExt};
 use rustc_middle::util::Providers;
 use rustc_middle::{bug, query, span_bug};
-use rustc_mir_build::builder::build_mir;
 use rustc_span::source_map::Spanned;
 use rustc_span::{DUMMY_SP, sym};
 use tracing::debug;
@@ -55,6 +52,7 @@ mod liveness;
 mod patch;
 mod shim;
 mod ssa;
+mod trivial_const;
 
 /// We import passes via this macro so that we can have a static list of pass names
 /// (used to verify CLI arguments). It takes a list of modules, followed by the passes
@@ -189,6 +187,7 @@ declare_passes! {
             Final
         };
     mod simplify_branches : SimplifyConstCondition {
+        AfterInstSimplify,
         AfterConstProp,
         Final
     };
@@ -196,6 +195,7 @@ declare_passes! {
     mod single_use_consts : SingleUseConsts;
     mod sroa : ScalarReplacementOfAggregates;
     mod strip_debuginfo : StripDebugInfo;
+    mod ssa_range_prop: SsaRangePropagation;
     mod unreachable_enum_branching : UnreachableEnumBranching;
     mod unreachable_prop : UnreachablePropagation;
     mod validate : Validator;
@@ -205,9 +205,9 @@ rustc_fluent_macro::fluent_messages! { "../messages.ftl" }
 
 pub fn provide(providers: &mut Providers) {
     coverage::query::provide(providers);
-    ffi_unwind_calls::provide(providers);
-    shim::provide(providers);
-    cross_crate_inline::provide(providers);
+    ffi_unwind_calls::provide(&mut providers.queries);
+    shim::provide(&mut providers.queries);
+    cross_crate_inline::provide(&mut providers.queries);
     providers.queries = query::Providers {
         mir_keys,
         mir_built,
@@ -225,6 +225,7 @@ pub fn provide(providers: &mut Providers) {
         promoted_mir,
         deduced_param_attrs: deduce_param_attrs::deduced_param_attrs,
         coroutine_by_move_body_def_id: coroutine::coroutine_by_move_body_def_id,
+        trivial_const: trivial_const::trivial_const_provider,
         ..providers.queries
     };
 }
@@ -258,7 +259,7 @@ fn remap_mir_for_const_eval_select<'tcx>(
                     if context == hir::Constness::Const { called_in_const } else { called_at_rt };
                 let (method, place): (fn(Place<'tcx>) -> Operand<'tcx>, Place<'tcx>) =
                     match tupled_args.node {
-                        Operand::Constant(_) => {
+                        Operand::Constant(_) | Operand::RuntimeChecks(_) => {
                             // There is no good way of extracting a tuple arg from a constant
                             // (const generic stuff) so we just create a temporary and deconstruct
                             // that.
@@ -375,8 +376,21 @@ fn mir_const_qualif(tcx: TyCtxt<'_>, def: LocalDefId) -> ConstQualifs {
     validator.qualifs_in_return_place()
 }
 
+/// Implementation of the `mir_built` query.
 fn mir_built(tcx: TyCtxt<'_>, def: LocalDefId) -> &Steal<Body<'_>> {
-    let mut body = build_mir(tcx, def);
+    // Delegate to the main MIR building code in the `rustc_mir_build` crate.
+    // This is the one place that is allowed to call `build_mir_inner_impl`.
+    let mut body = tcx.build_mir_inner_impl(def);
+
+    // Identifying trivial consts based on their mir_built is easy, but a little wasteful.
+    // Trying to push this logic earlier in the compiler and never even produce the Body would
+    // probably improve compile time.
+    if trivial_const::trivial_const(tcx, def, || &body).is_some() {
+        // Skip all the passes below for trivial consts.
+        let body = tcx.alloc_steal_mir(body);
+        pass_manager::dump_mir_for_phase_change(tcx, &body.borrow());
+        return body;
+    }
 
     pass_manager::dump_mir_for_phase_change(tcx, &body);
 
@@ -408,14 +422,15 @@ fn mir_promoted(
     tcx: TyCtxt<'_>,
     def: LocalDefId,
 ) -> (&Steal<Body<'_>>, &Steal<IndexVec<Promoted, Body<'_>>>) {
+    debug_assert!(!tcx.is_trivial_const(def), "Tried to get mir_promoted of a trivial const");
+
     // Ensure that we compute the `mir_const_qualif` for constants at
     // this point, before we steal the mir-const result.
     // Also this means promotion can rely on all const checks having been done.
 
     let const_qualifs = match tcx.def_kind(def) {
         DefKind::Fn | DefKind::AssocFn | DefKind::Closure
-            if tcx.constness(def) == hir::Constness::Const
-                || tcx.is_const_default_method(def.to_def_id()) =>
+            if tcx.constness(def) == hir::Constness::Const =>
         {
             tcx.mir_const_qualif(def)
         }
@@ -434,6 +449,9 @@ fn mir_promoted(
     if tcx.needs_coroutine_by_move_body_def_id(def.to_def_id()) {
         tcx.ensure_done().coroutine_by_move_body_def_id(def);
     }
+
+    // the `trivial_const` query uses mir_built, so make sure it is run.
+    tcx.ensure_done().trivial_const(def);
 
     let mut body = tcx.mir_built(def).steal();
     if let Some(error_reported) = const_qualifs.tainted_by_errors {
@@ -462,6 +480,7 @@ fn mir_promoted(
 
 /// Compute the MIR that is used during CTFE (and thus has no optimizations run on it)
 fn mir_for_ctfe(tcx: TyCtxt<'_>, def_id: LocalDefId) -> &Body<'_> {
+    debug_assert!(!tcx.is_trivial_const(def_id), "Tried to get mir_for_ctfe of a trivial const");
     tcx.arena.alloc(inner_mir_for_ctfe(tcx, def_id))
 }
 
@@ -708,12 +727,24 @@ pub(crate) fn run_optimization_passes<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'
             // optimizations. This invalidates CFG caches, so avoid putting between
             // `ReferencePropagation` and `GVN` which both use the dominator tree.
             &instsimplify::InstSimplify::AfterSimplifyCfg,
+            // After `InstSimplify-after-simplifycfg` with `-Zub_checks=false`, simplify
+            // ```
+            // _13 = const false;
+            // assume(copy _13);
+            // Call(precondition_check);
+            // ```
+            // to unreachable to eliminate the call to help later passes.
+            // This invalidates CFG caches also.
+            &o1(simplify_branches::SimplifyConstCondition::AfterInstSimplify),
             &ref_prop::ReferencePropagation,
             &sroa::ScalarReplacementOfAggregates,
             &simplify::SimplifyLocals::BeforeConstProp,
             &dead_store_elimination::DeadStoreElimination::Initial,
             &gvn::GVN,
             &simplify::SimplifyLocals::AfterGVN,
+            // This pass does attempt to track assignments.
+            // Keep it close to GVN which merges identical values into the same local.
+            &ssa_range_prop::SsaRangePropagation,
             &match_branches::MatchBranchSimplification,
             &dataflow_const_prop::DataflowConstProp,
             &single_use_consts::SingleUseConsts,

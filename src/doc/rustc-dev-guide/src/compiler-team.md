@@ -29,7 +29,7 @@ check out [triagebot.toml's assign section][map].
 It contains a listing of the various parts of the compiler and a list of people
 who are reviewers of each part.
 
-[map]: https://github.com/rust-lang/rust/blob/master/triagebot.toml
+[map]: https://github.com/rust-lang/rust/blob/HEAD/triagebot.toml
 
 ## Rust compiler meeting
 
@@ -54,8 +54,8 @@ They are held on [Zulip][zulip-meetings]. It works roughly as follows:
   those that are sufficiently important for us to actively track
   progress. P-critical and P-high bugs should ideally always have an
   assignee.
-- **Check S-waiting-on-team and I-nominated issues:** These are issues where feedback from
-  the team is desired.
+- **Check `S-waiting-on-t-compiler` and `I-compiler-nominated` issues:** These are issues where
+  feedback from the team is desired.
 - **Look over the performance triage report:** We check for PRs that made the
     performance worse and try to decide if it's worth reverting the performance regression or if
     the regression can be addressed in a future PR.
@@ -96,9 +96,9 @@ Once you have made a number of individual PRs to rustc, we will often
 offer r+ privileges. This means that you have the right to instruct
 "bors" (the robot that manages which PRs get landed into rustc) to
 merge a PR
-([here are some instructions for how to talk to bors][homu-guide]).
+([here are some instructions for how to talk to bors][bors-guide]).
 
-[homu-guide]: https://bors.rust-lang.org/
+[bors-guide]: https://bors.rust-lang.org/
 
 The guidelines for reviewers are as follows:
 

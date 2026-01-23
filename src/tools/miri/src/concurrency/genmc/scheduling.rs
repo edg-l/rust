@@ -1,4 +1,5 @@
 use genmc_sys::{ActionKind, ExecutionState};
+use rustc_data_structures::either::Either;
 use rustc_middle::mir::TerminatorKind;
 use rustc_middle::ty::{self, Ty};
 
@@ -38,7 +39,7 @@ fn get_next_instruction_kind<'tcx>(
     let Some(frame) = thread_manager.active_thread_stack().last() else {
         return interp_ok(NonAtomic);
     };
-    let either::Either::Left(loc) = frame.current_loc() else {
+    let Either::Left(loc) = frame.current_loc() else {
         // We are unwinding, so the next step is definitely not atomic.
         return interp_ok(NonAtomic);
     };
@@ -117,14 +118,21 @@ impl GenmcCtx {
         // Depending on the exec_state, we either schedule the given thread, or we are finished with this execution.
         match result.exec_state {
             ExecutionState::Ok => interp_ok(Some(thread_infos.get_miri_tid(result.next_thread))),
-            ExecutionState::Blocked => throw_machine_stop!(TerminationInfo::GenmcBlockedExecution),
+            ExecutionState::Blocked => {
+                // This execution doesn't need further exploration. We treat this as "success, no
+                // leak check needed", which makes it a NOP in the big outer loop.
+                throw_machine_stop!(TerminationInfo::Exit {
+                    code: 0, // success
+                    leak_check: false,
+                });
+            }
             ExecutionState::Finished => {
                 let exit_status = self.exec_state.exit_status.get().expect(
                     "If the execution is finished, we should have a return value from the program.",
                 );
                 throw_machine_stop!(TerminationInfo::Exit {
                     code: exit_status.exit_code,
-                    leak_check: exit_status.do_leak_check()
+                    leak_check: matches!(exit_status.exit_type, super::ExitType::MainThreadFinish),
                 });
             }
             ExecutionState::Error => {

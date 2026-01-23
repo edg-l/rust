@@ -5,20 +5,21 @@ use std::mem;
 
 use either::Either;
 use hir_def::{
-    AdtId, DefWithBodyId, FieldId, FunctionId, VariantId,
+    AdtId, CallableDefId, DefWithBodyId, FieldId, FunctionId, VariantId,
     expr_store::{Body, path::Path},
     hir::{AsmOperand, Expr, ExprId, ExprOrPatId, InlineAsmKind, Pat, PatId, Statement, UnaryOp},
     resolver::{HasResolver, ResolveValueResult, Resolver, ValueNs},
     signatures::StaticFlags,
     type_ref::Rawness,
 };
+use rustc_type_ir::inherent::IntoKind;
 use span::Edition;
 
-use crate::utils::TargetFeatureIsSafeInTarget;
 use crate::{
-    InferenceResult, Interner, TargetFeatures, TyExt, TyKind,
+    InferenceResult, TargetFeatures,
     db::HirDatabase,
-    utils::{is_fn_unsafe_to_call, target_feature_is_safe_in_target},
+    next_solver::{CallableIdWrapper, TyKind, abi::Safety},
+    utils::{TargetFeatureIsSafeInTarget, is_fn_unsafe_to_call, target_feature_is_safe_in_target},
 };
 
 #[derive(Debug, Default)]
@@ -41,7 +42,7 @@ pub fn missing_unsafe(db: &dyn HirDatabase, def: DefWithBodyId) -> MissingUnsafe
 
     let mut res = MissingUnsafeResult { fn_is_unsafe: is_unsafe, ..MissingUnsafeResult::default() };
     let body = db.body(def);
-    let infer = db.infer(def);
+    let infer = InferenceResult::for_body(db, def);
     let mut callback = |diag| match diag {
         UnsafeDiagnostic::UnsafeOperation { node, inside_unsafe_block, reason } => {
             if inside_unsafe_block == InsideUnsafeBlock::No {
@@ -54,7 +55,7 @@ pub fn missing_unsafe(db: &dyn HirDatabase, def: DefWithBodyId) -> MissingUnsafe
             }
         }
     };
-    let mut visitor = UnsafeVisitor::new(db, &infer, &body, def, &mut callback);
+    let mut visitor = UnsafeVisitor::new(db, infer, &body, def, &mut callback);
     visitor.walk_expr(body.body_expr);
 
     if !is_unsafe {
@@ -143,7 +144,7 @@ struct UnsafeVisitor<'db> {
     inside_assignment: bool,
     inside_union_destructure: bool,
     callback: &'db mut dyn FnMut(UnsafeDiagnostic),
-    def_target_features: TargetFeatures,
+    def_target_features: TargetFeatures<'db>,
     // FIXME: This needs to be the edition of the span of each call.
     edition: Edition,
     /// On some targets (WASM), calling safe functions with `#[target_feature]` is always safe, even when
@@ -161,10 +162,10 @@ impl<'db> UnsafeVisitor<'db> {
     ) -> Self {
         let resolver = def.resolver(db);
         let def_target_features = match def {
-            DefWithBodyId::FunctionId(func) => TargetFeatures::from_attrs(&db.attrs(func.into())),
+            DefWithBodyId::FunctionId(func) => TargetFeatures::from_fn(db, func),
             _ => TargetFeatures::default(),
         };
-        let krate = resolver.module().krate();
+        let krate = resolver.krate();
         let edition = krate.data(db).edition;
         let target_feature_is_safe = match &krate.workspace_data(db).target {
             Ok(target) => target_feature_is_safe_in_target(target),
@@ -259,7 +260,7 @@ impl<'db> UnsafeVisitor<'db> {
 
         match pat {
             Pat::Record { .. } => {
-                if let Some((AdtId::UnionId(_), _)) = self.infer[current].as_adt() {
+                if let Some((AdtId::UnionId(_), _)) = self.infer.pat_ty(current).as_adt() {
                     let old_inside_union_destructure =
                         mem::replace(&mut self.inside_union_destructure, true);
                     self.body.walk_pats_shallow(current, |pat| self.walk_pat(pat));
@@ -285,12 +286,14 @@ impl<'db> UnsafeVisitor<'db> {
         let inside_assignment = mem::replace(&mut self.inside_assignment, false);
         match expr {
             &Expr::Call { callee, .. } => {
-                let callee = &self.infer[callee];
-                if let Some(func) = callee.as_fn_def(self.db) {
+                let callee = self.infer.expr_ty(callee);
+                if let TyKind::FnDef(CallableIdWrapper(CallableDefId::FunctionId(func)), _) =
+                    callee.kind()
+                {
                     self.check_call(current, func);
                 }
-                if let TyKind::Function(fn_ptr) = callee.kind(Interner)
-                    && fn_ptr.sig.safety == chalk_ir::Safety::Unsafe
+                if let TyKind::FnPtr(_, hdr) = callee.kind()
+                    && hdr.safety == Safety::Unsafe
                 {
                     self.on_unsafe_op(current.into(), UnsafetyReason::UnsafeFnCall);
                 }
@@ -338,7 +341,7 @@ impl<'db> UnsafeVisitor<'db> {
                 }
             }
             Expr::UnaryOp { expr, op: UnaryOp::Deref } => {
-                if let TyKind::Raw(..) = &self.infer[*expr].kind(Interner) {
+                if let TyKind::RawPtr(..) = self.infer.expr_ty(*expr).kind() {
                     self.on_unsafe_op(current.into(), UnsafetyReason::RawPtrDeref);
                 }
             }

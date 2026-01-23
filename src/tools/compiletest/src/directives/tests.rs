@@ -1,12 +1,43 @@
+use std::collections::BTreeSet;
+
 use camino::Utf8Path;
 use semver::Version;
 
 use crate::common::{Config, Debugger, TestMode};
 use crate::directives::{
-    DirectivesCache, EarlyProps, Edition, EditionRange, FileDirectives, extract_llvm_version,
-    extract_version_range, iter_directives, line_directive, parse_edition, parse_normalize_rule,
+    self, AuxProps, DIRECTIVE_HANDLERS_MAP, DirectivesCache, EarlyProps, Edition, EditionRange,
+    FileDirectives, KNOWN_DIRECTIVE_NAMES_SET, LineNumber, extract_llvm_version,
+    extract_version_range, line_directive, parse_edition, parse_normalize_rule,
 };
-use crate::executor::{CollectedTestDesc, ShouldPanic};
+use crate::executor::{CollectedTestDesc, ShouldFail};
+
+/// All directive handlers should have a name that is also in `KNOWN_DIRECTIVE_NAMES_SET`.
+#[test]
+fn handler_names() {
+    let unknown_names = DIRECTIVE_HANDLERS_MAP
+        .keys()
+        .copied()
+        .filter(|name| !KNOWN_DIRECTIVE_NAMES_SET.contains(name))
+        .collect::<BTreeSet<_>>();
+
+    assert!(
+        unknown_names.is_empty(),
+        "Directive handler names not in `directive_names.rs`: {unknown_names:#?}"
+    );
+}
+
+#[test]
+fn external_ignores() {
+    let unknown_names = directives::cfg::EXTERNAL_IGNORES_SET
+        .difference(&KNOWN_DIRECTIVE_NAMES_SET)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+
+    assert!(
+        unknown_names.is_empty(),
+        "Directive names not in `directive_names.rs`: {unknown_names:#?}"
+    );
+}
 
 fn make_test_description(
     config: &Config,
@@ -20,6 +51,7 @@ fn make_test_description(
     let mut poisoned = false;
     let file_directives = FileDirectives::from_file_contents(path, file_contents);
 
+    let mut aux_props = AuxProps::default();
     let test = crate::directives::make_test_description(
         config,
         &cache,
@@ -29,6 +61,7 @@ fn make_test_description(
         &file_directives,
         revision,
         &mut poisoned,
+        &mut aux_props,
     );
     if poisoned {
         panic!("poisoned!");
@@ -84,6 +117,7 @@ struct ConfigBuilder {
     profiler_runtime: bool,
     rustc_debug_assertions: bool,
     std_debug_assertions: bool,
+    std_remap_debuginfo: bool,
 }
 
 impl ConfigBuilder {
@@ -152,6 +186,11 @@ impl ConfigBuilder {
         self
     }
 
+    fn std_remap_debuginfo(&mut self, is_enabled: bool) -> &mut Self {
+        self.std_remap_debuginfo = is_enabled;
+        self
+    }
+
     fn build(&mut self) -> Config {
         let args = &[
             "compiletest",
@@ -186,6 +225,7 @@ impl ConfigBuilder {
             "--nightly-branch=",
             "--git-merge-commit-email=",
             "--minicore-path=",
+            "--jobs=0",
         ];
         let mut args: Vec<String> = args.iter().map(ToString::to_string).collect();
 
@@ -213,6 +253,9 @@ impl ConfigBuilder {
         if self.std_debug_assertions {
             args.push("--with-std-debug-assertions".to_owned());
         }
+        if self.std_remap_debuginfo {
+            args.push("--with-std-remap-debuginfo".to_owned());
+        }
 
         args.push("--rustc-path".to_string());
         args.push(std::env::var("TEST_RUSTC").expect("must be configured by bootstrap"));
@@ -225,7 +268,7 @@ fn cfg() -> ConfigBuilder {
     ConfigBuilder::default()
 }
 
-fn parse_rs(config: &Config, contents: &str) -> EarlyProps {
+fn parse_early_props(config: &Config, contents: &str) -> EarlyProps {
     let file_directives = FileDirectives::from_file_contents(Utf8Path::new("a.rs"), contents);
     EarlyProps::from_file_directives(config, &file_directives)
 }
@@ -244,34 +287,16 @@ fn should_fail() {
     let p = Utf8Path::new("a.rs");
 
     let d = make_test_description(&config, tn.clone(), p, p, "", None);
-    assert_eq!(d.should_panic, ShouldPanic::No);
+    assert_eq!(d.should_fail, ShouldFail::No);
     let d = make_test_description(&config, tn, p, p, "//@ should-fail", None);
-    assert_eq!(d.should_panic, ShouldPanic::Yes);
+    assert_eq!(d.should_fail, ShouldFail::Yes);
 }
 
 #[test]
 fn revisions() {
     let config: Config = cfg().build();
 
-    assert_eq!(parse_rs(&config, "//@ revisions: a b c").revisions, vec!["a", "b", "c"],);
-}
-
-#[test]
-fn aux_build() {
-    let config: Config = cfg().build();
-
-    assert_eq!(
-        parse_rs(
-            &config,
-            r"
-        //@ aux-build: a.rs
-        //@ aux-build: b.rs
-        "
-        )
-        .aux
-        .builds,
-        vec!["a.rs", "b.rs"],
-    );
+    assert_eq!(parse_early_props(&config, "//@ revisions: a b c").revisions, vec!["a", "b", "c"],);
 }
 
 #[test]
@@ -383,6 +408,19 @@ fn std_debug_assertions() {
 
     assert!(!check_ignore(&config, "//@ needs-std-debug-assertions"));
     assert!(check_ignore(&config, "//@ ignore-std-debug-assertions"));
+}
+
+#[test]
+fn std_remap_debuginfo() {
+    let config: Config = cfg().std_remap_debuginfo(false).build();
+
+    assert!(check_ignore(&config, "//@ needs-std-remap-debuginfo"));
+    assert!(!check_ignore(&config, "//@ ignore-std-remap-debuginfo"));
+
+    let config: Config = cfg().std_remap_debuginfo(true).build();
+
+    assert!(!check_ignore(&config, "//@ needs-std-remap-debuginfo"));
+    assert!(check_ignore(&config, "//@ ignore-std-remap-debuginfo"));
 }
 
 #[test]
@@ -550,7 +588,7 @@ fn test_extract_version_range() {
 #[should_panic(expected = "duplicate revision: `rpass1` in line ` rpass1 rpass1`")]
 fn test_duplicate_revisions() {
     let config: Config = cfg().build();
-    parse_rs(&config, "//@ revisions: rpass1 rpass1");
+    parse_early_props(&config, "//@ revisions: rpass1 rpass1");
 }
 
 #[test]
@@ -559,14 +597,14 @@ fn test_duplicate_revisions() {
 )]
 fn test_assembly_mode_forbidden_revisions() {
     let config = cfg().mode("assembly").build();
-    parse_rs(&config, "//@ revisions: CHECK");
+    parse_early_props(&config, "//@ revisions: CHECK");
 }
 
 #[test]
 #[should_panic(expected = "revision name `true` is not permitted")]
 fn test_forbidden_revisions() {
     let config = cfg().mode("ui").build();
-    parse_rs(&config, "//@ revisions: true");
+    parse_early_props(&config, "//@ revisions: true");
 }
 
 #[test]
@@ -575,7 +613,7 @@ fn test_forbidden_revisions() {
 )]
 fn test_codegen_mode_forbidden_revisions() {
     let config = cfg().mode("codegen").build();
-    parse_rs(&config, "//@ revisions: CHECK");
+    parse_early_props(&config, "//@ revisions: CHECK");
 }
 
 #[test]
@@ -584,7 +622,7 @@ fn test_codegen_mode_forbidden_revisions() {
 )]
 fn test_miropt_mode_forbidden_revisions() {
     let config = cfg().mode("mir-opt").build();
-    parse_rs(&config, "//@ revisions: CHECK");
+    parse_early_props(&config, "//@ revisions: CHECK");
 }
 
 #[test]
@@ -593,7 +631,7 @@ fn test_forbidden_revisions_allowed_in_non_filecheck_dir() {
     let modes = [
         "pretty",
         "debuginfo",
-        "rustdoc",
+        "rustdoc-html",
         "rustdoc-json",
         "codegen-units",
         "incremental",
@@ -608,7 +646,7 @@ fn test_forbidden_revisions_allowed_in_non_filecheck_dir() {
         let content = format!("//@ revisions: {rev}");
         for mode in modes {
             let config = cfg().mode(mode).build();
-            parse_rs(&config, &content);
+            parse_early_props(&config, &content);
         }
     }
 }
@@ -620,6 +658,8 @@ fn ignore_arch() {
         ("i686-unknown-linux-gnu", "x86"),
         ("nvptx64-nvidia-cuda", "nvptx64"),
         ("thumbv7m-none-eabi", "thumb"),
+        ("i586-unknown-linux-gnu", "x86"),
+        ("i586-unknown-linux-gnu", "i586"),
     ];
     for (target, arch) in archs {
         let config: Config = cfg().target(target).build();
@@ -704,20 +744,16 @@ fn pointer_width() {
 #[test]
 fn wasm_special() {
     let ignores = [
-        ("wasm32-unknown-unknown", "emscripten", true),
+        ("wasm32-unknown-unknown", "emscripten", false),
         ("wasm32-unknown-unknown", "wasm32", true),
-        ("wasm32-unknown-unknown", "wasm32-bare", true),
         ("wasm32-unknown-unknown", "wasm64", false),
         ("wasm32-unknown-emscripten", "emscripten", true),
         ("wasm32-unknown-emscripten", "wasm32", true),
-        ("wasm32-unknown-emscripten", "wasm32-bare", false),
         ("wasm32-wasip1", "emscripten", false),
         ("wasm32-wasip1", "wasm32", true),
-        ("wasm32-wasip1", "wasm32-bare", false),
         ("wasm32-wasip1", "wasi", true),
         ("wasm64-unknown-unknown", "emscripten", false),
         ("wasm64-unknown-unknown", "wasm32", false),
-        ("wasm64-unknown-unknown", "wasm32-bare", false),
         ("wasm64-unknown-unknown", "wasm64", true),
     ];
     for (target, pattern, ignore) in ignores {
@@ -725,8 +761,13 @@ fn wasm_special() {
         assert_eq!(
             check_ignore(&config, &format!("//@ ignore-{pattern}")),
             ignore,
-            "{target} {pattern}"
+            "target `{target}` vs `//@ ignore-{pattern}`"
         );
+        assert_eq!(
+            check_ignore(&config, &format!("//@ only-{pattern}")),
+            !ignore,
+            "target `{target}` vs `//@ only-{pattern}`"
+        )
     }
 }
 
@@ -762,6 +803,29 @@ fn ignore_coverage() {
 }
 
 #[test]
+fn only_ignore_elf() {
+    let cases = &[
+        ("aarch64-apple-darwin", false),
+        ("aarch64-unknown-linux-gnu", true),
+        ("powerpc64-ibm-aix", false),
+        ("wasm32-unknown-unknown", false),
+        ("wasm32-wasip1", false),
+        ("x86_64-apple-darwin", false),
+        ("x86_64-pc-windows-msvc", false),
+        ("x86_64-unknown-freebsd", true),
+        ("x86_64-unknown-illumos", true),
+        ("x86_64-unknown-linux-gnu", true),
+        ("x86_64-unknown-none", true),
+        ("x86_64-unknown-uefi", false),
+    ];
+    for &(target, is_elf) in cases {
+        let config = &cfg().target(target).build();
+        assert_eq!(is_elf, check_ignore(config, "//@ ignore-elf"), "`//@ ignore-elf` for {target}");
+        assert_eq!(is_elf, !check_ignore(config, "//@ only-elf"), "`//@ only-elf` for {target}");
+    }
+}
+
+#[test]
 fn threads_support() {
     let threads = [
         ("x86_64-unknown-linux-gnu", true),
@@ -780,7 +844,10 @@ fn threads_support() {
 
 fn run_path(poisoned: &mut bool, path: &Utf8Path, file_contents: &str) {
     let file_directives = FileDirectives::from_file_contents(path, file_contents);
-    iter_directives(TestMode::Ui, poisoned, &file_directives, &mut |_| {});
+    let result = directives::do_early_directives_check(TestMode::Ui, &file_directives);
+    if result.is_err() {
+        *poisoned = true;
+    }
 }
 
 #[test]
@@ -956,9 +1023,22 @@ fn parse_edition_range(line: &str) -> Option<EditionRange> {
     let config = cfg().build();
 
     let line_with_comment = format!("//@ {line}");
-    let line = line_directive(0, &line_with_comment).unwrap();
+    let line =
+        line_directive(Utf8Path::new("tmp.rs"), LineNumber::ZERO, &line_with_comment).unwrap();
 
-    super::parse_edition_range(&config, &line, "tmp.rs".into())
+    super::parse_edition_range(&config, &line)
+}
+
+#[test]
+fn edition_order() {
+    let editions = &[
+        Edition::Year(2015),
+        Edition::Year(2018),
+        Edition::Year(2021),
+        Edition::Year(2024),
+        Edition::Future,
+    ];
+    assert!(editions.is_sorted(), "{editions:#?}");
 }
 
 #[test]

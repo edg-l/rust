@@ -1,7 +1,8 @@
-//@ add-core-stubs
+//@ add-minicore
 //@ compile-flags: --target thumbv8m.main-none-eabi --crate-type lib
 //@ incremental (required to trigger the bug)
 //@ needs-llvm-components: arm
+//@ ignore-backends: gcc
 #![feature(abi_cmse_nonsecure_call, no_core)]
 #![no_core]
 

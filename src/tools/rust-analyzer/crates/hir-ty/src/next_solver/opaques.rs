@@ -1,107 +1,74 @@
 //! Things related to opaques in the next-trait-solver.
 
-use intern::Interned;
+use intern::{Interned, InternedRef, impl_internable};
+use macros::GenericTypeVisitable;
 use rustc_ast_ir::try_visit;
+use rustc_type_ir::inherent::SliceLike;
 
-use crate::next_solver::SolverDefId;
+use crate::next_solver::{impl_foldable_for_interned_slice, interned_slice};
 
-use super::{CanonicalVarKind, DbInterner, interned_vec_nolifetime_salsa};
+use super::{DbInterner, SolverDefId, Ty};
 
 pub type OpaqueTypeKey<'db> = rustc_type_ir::OpaqueTypeKey<DbInterner<'db>>;
-pub type PredefinedOpaquesData<'db> = rustc_type_ir::solve::PredefinedOpaquesData<DbInterner<'db>>;
+
+type PredefinedOpaque<'db> = (OpaqueTypeKey<'db>, Ty<'db>);
+interned_slice!(
+    PredefinedOpaquesStorage,
+    PredefinedOpaques,
+    StoredPredefinedOpaques,
+    predefined_opaques,
+    PredefinedOpaque<'db>,
+    PredefinedOpaque<'static>,
+);
+impl_foldable_for_interned_slice!(PredefinedOpaques);
+
 pub type ExternalConstraintsData<'db> =
     rustc_type_ir::solve::ExternalConstraintsData<DbInterner<'db>>;
 
-#[salsa::interned(constructor = new_, debug)]
-pub struct PredefinedOpaques<'db> {
-    #[returns(ref)]
-    kind_: rustc_type_ir::solve::PredefinedOpaquesData<DbInterner<'db>>,
-}
+interned_slice!(
+    SolverDefIdsStorage,
+    SolverDefIds,
+    StoredSolverDefIds,
+    def_ids,
+    SolverDefId,
+    SolverDefId,
+);
+impl_foldable_for_interned_slice!(SolverDefIds);
 
-impl<'db> PredefinedOpaques<'db> {
-    pub fn new(interner: DbInterner<'db>, data: PredefinedOpaquesData<'db>) -> Self {
-        PredefinedOpaques::new_(interner.db(), data)
-    }
-
-    pub fn inner(&self) -> &PredefinedOpaquesData<'db> {
-        salsa::with_attached_database(|db| {
-            let inner = self.kind_(db);
-            // SAFETY: ¯\_(ツ)_/¯
-            unsafe { std::mem::transmute(inner) }
-        })
-        .unwrap()
-    }
-}
-
-impl<'db> rustc_type_ir::TypeVisitable<DbInterner<'db>> for PredefinedOpaques<'db> {
-    fn visit_with<V: rustc_type_ir::TypeVisitor<DbInterner<'db>>>(
-        &self,
-        visitor: &mut V,
-    ) -> V::Result {
-        self.opaque_types.visit_with(visitor)
-    }
-}
-
-impl<'db> rustc_type_ir::TypeFoldable<DbInterner<'db>> for PredefinedOpaques<'db> {
-    fn try_fold_with<F: rustc_type_ir::FallibleTypeFolder<DbInterner<'db>>>(
-        self,
-        folder: &mut F,
-    ) -> Result<Self, F::Error> {
-        Ok(PredefinedOpaques::new(
-            folder.cx(),
-            PredefinedOpaquesData {
-                opaque_types: self
-                    .opaque_types
-                    .iter()
-                    .cloned()
-                    .map(|opaque| opaque.try_fold_with(folder))
-                    .collect::<Result<_, F::Error>>()?,
-            },
-        ))
-    }
-    fn fold_with<F: rustc_type_ir::TypeFolder<DbInterner<'db>>>(self, folder: &mut F) -> Self {
-        PredefinedOpaques::new(
-            folder.cx(),
-            PredefinedOpaquesData {
-                opaque_types: self
-                    .opaque_types
-                    .iter()
-                    .cloned()
-                    .map(|opaque| opaque.fold_with(folder))
-                    .collect(),
-            },
-        )
-    }
-}
-
-impl<'db> std::ops::Deref for PredefinedOpaques<'db> {
-    type Target = PredefinedOpaquesData<'db>;
-
-    fn deref(&self) -> &Self::Target {
-        self.inner()
-    }
-}
-
-interned_vec_nolifetime_salsa!(SolverDefIds, SolverDefId);
-
-#[salsa::interned(constructor = new_, debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExternalConstraints<'db> {
-    #[returns(ref)]
-    kind_: rustc_type_ir::solve::ExternalConstraintsData<DbInterner<'db>>,
+    interned: InternedRef<'db, ExternalConstraintsInterned>,
 }
+
+#[derive(PartialEq, Eq, Hash, GenericTypeVisitable)]
+pub(super) struct ExternalConstraintsInterned(ExternalConstraintsData<'static>);
+
+impl_internable!(gc; ExternalConstraintsInterned);
+
+const _: () = {
+    const fn is_copy<T: Copy>() {}
+    is_copy::<ExternalConstraints<'static>>();
+};
 
 impl<'db> ExternalConstraints<'db> {
-    pub fn new(interner: DbInterner<'db>, data: ExternalConstraintsData<'db>) -> Self {
-        ExternalConstraints::new_(interner.db(), data)
+    #[inline]
+    pub fn new(_interner: DbInterner<'db>, data: ExternalConstraintsData<'db>) -> Self {
+        let data = unsafe {
+            std::mem::transmute::<ExternalConstraintsData<'db>, ExternalConstraintsData<'static>>(
+                data,
+            )
+        };
+        Self { interned: Interned::new_gc(ExternalConstraintsInterned(data)) }
     }
 
+    #[inline]
     pub fn inner(&self) -> &ExternalConstraintsData<'db> {
-        salsa::with_attached_database(|db| {
-            let inner = self.kind_(db);
-            // SAFETY: ¯\_(ツ)_/¯
-            unsafe { std::mem::transmute(inner) }
-        })
-        .unwrap()
+        let inner = &self.interned.0;
+        unsafe {
+            std::mem::transmute::<&ExternalConstraintsData<'static>, &ExternalConstraintsData<'db>>(
+                inner,
+            )
+        }
     }
 }
 
@@ -110,6 +77,12 @@ impl<'db> std::ops::Deref for ExternalConstraints<'db> {
 
     fn deref(&self) -> &Self::Target {
         self.inner()
+    }
+}
+
+impl std::fmt::Debug for ExternalConstraints<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.inner().fmt(f)
     }
 }
 

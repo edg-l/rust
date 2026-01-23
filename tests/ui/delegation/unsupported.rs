@@ -44,12 +44,10 @@ mod recursive {
     }
 
     reuse to_reuse1::foo;
-    //~^ ERROR recursive delegation is not supported yet
 }
 
 mod effects {
-    #[const_trait]
-    trait Trait {
+    const trait Trait {
         fn foo();
     }
 

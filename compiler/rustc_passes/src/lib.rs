@@ -5,15 +5,11 @@
 //! This API is completely unstable and subject to change.
 
 // tidy-alphabetical-start
-#![allow(internal_features)]
-#![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
-#![doc(rust_logo)]
 #![feature(if_let_guard)]
 #![feature(map_try_insert)]
-#![feature(rustdoc_internals)]
 // tidy-alphabetical-end
 
-use rustc_middle::util::Providers;
+use rustc_middle::query::Providers;
 
 pub mod abi_test;
 mod check_attr;
@@ -21,6 +17,7 @@ mod check_export;
 pub mod dead;
 mod debugger_visualizer;
 mod diagnostic_items;
+mod eii;
 pub mod entry;
 mod errors;
 pub mod hir_id_validator;
@@ -47,4 +44,5 @@ pub fn provide(providers: &mut Providers) {
     stability::provide(providers);
     upvars::provide(providers);
     check_export::provide(providers);
+    providers.check_externally_implementable_items = eii::check_externally_implementable_items;
 }

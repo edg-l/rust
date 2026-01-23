@@ -216,17 +216,6 @@ mod autodiff {
     }
 }
 
-pub(crate) use ad_fallback::*;
-mod ad_fallback {
-    use super::*;
-    #[derive(Diagnostic)]
-    #[diag(builtin_macros_autodiff_not_build)]
-    pub(crate) struct AutoDiffSupportNotBuild {
-        #[primary_span]
-        pub(crate) span: Span,
-    }
-}
-
 #[derive(Diagnostic)]
 #[diag(builtin_macros_concat_bytes_invalid)]
 pub(crate) struct ConcatBytesInvalid {
@@ -514,10 +503,6 @@ pub(crate) struct EnvNotDefinedWithUserMessage {
 impl<'a, G: EmissionGuarantee> Diagnostic<'a, G> for EnvNotDefinedWithUserMessage {
     #[track_caller]
     fn into_diag(self, dcx: DiagCtxtHandle<'a>, level: Level) -> Diag<'a, G> {
-        #[expect(
-            rustc::untranslatable_diagnostic,
-            reason = "cannot translate user-provided messages"
-        )]
         let mut diag = Diag::new(dcx, level, self.msg_from_user.to_string());
         diag.span(self.span);
         diag
@@ -533,6 +518,14 @@ pub(crate) enum EnvNotDefined<'a> {
         span: Span,
         var: Symbol,
         var_expr: &'a rustc_ast::Expr,
+    },
+    #[diag(builtin_macros_env_not_defined)]
+    #[help(builtin_macros_cargo_typo)]
+    CargoEnvVarTypo {
+        #[primary_span]
+        span: Span,
+        var: Symbol,
+        suggested_var: Symbol,
     },
     #[diag(builtin_macros_env_not_defined)]
     #[help(builtin_macros_custom)]
@@ -645,6 +638,15 @@ pub(crate) enum InvalidFormatStringSuggestion {
         #[primary_span]
         span: Span,
         replacement: String,
+    },
+    #[suggestion(
+        builtin_macros_format_add_missing_colon,
+        code = ":?",
+        applicability = "machine-applicable"
+    )]
+    AddMissingColon {
+        #[primary_span]
+        span: Span,
     },
 }
 
@@ -952,7 +954,7 @@ pub(crate) struct AttributeOnlyUsableWithCrateType<'a> {
 }
 
 #[derive(Diagnostic)]
-#[diag(builtin_macros_source_uitls_expected_item)]
+#[diag(builtin_macros_source_utils_expected_item)]
 pub(crate) struct ExpectedItem<'a> {
     #[primary_span]
     pub span: Span,
@@ -1001,4 +1003,62 @@ pub(crate) struct CfgSelectUnreachable {
 
     #[label]
     pub wildcard_span: Span,
+}
+
+#[derive(Diagnostic)]
+#[diag(builtin_macros_eii_declaration_expected_macro)]
+pub(crate) struct EiiExternTargetExpectedMacro {
+    #[primary_span]
+    pub span: Span,
+}
+
+#[derive(Diagnostic)]
+#[diag(builtin_macros_eii_declaration_expected_list)]
+pub(crate) struct EiiExternTargetExpectedList {
+    #[primary_span]
+    pub span: Span,
+}
+
+#[derive(Diagnostic)]
+#[diag(builtin_macros_eii_declaration_expected_unsafe)]
+pub(crate) struct EiiExternTargetExpectedUnsafe {
+    #[primary_span]
+    #[note]
+    pub span: Span,
+}
+
+#[derive(Diagnostic)]
+#[diag(builtin_macros_eii_shared_macro_expected_function)]
+pub(crate) struct EiiSharedMacroExpectedFunction {
+    #[primary_span]
+    pub span: Span,
+    pub name: String,
+}
+
+#[derive(Diagnostic)]
+#[diag(builtin_macros_eii_shared_macro_in_statement_position)]
+pub(crate) struct EiiSharedMacroInStatementPosition {
+    #[primary_span]
+    pub span: Span,
+    pub name: String,
+    #[label]
+    pub item_span: Span,
+}
+
+#[derive(Diagnostic)]
+#[diag(builtin_macros_eii_only_once)]
+pub(crate) struct EiiOnlyOnce {
+    #[primary_span]
+    pub span: Span,
+    #[note]
+    pub first_span: Span,
+    pub name: String,
+}
+
+#[derive(Diagnostic)]
+#[diag(builtin_macros_eii_shared_macro_expected_max_one_argument)]
+pub(crate) struct EiiMacroExpectedMaxOneArgument {
+    #[primary_span]
+    pub span: Span,
+    pub name: String,
 }

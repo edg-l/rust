@@ -3,14 +3,16 @@ use super::utils::make_iterator_snippet;
 use clippy_utils::diagnostics::span_lint_and_then;
 use clippy_utils::higher::ForLoop;
 use clippy_utils::macros::root_macro_call_first_node;
-use clippy_utils::source::snippet;
+use clippy_utils::source::{snippet, snippet_with_context};
 use clippy_utils::visitors::{Descend, for_each_expr_without_closures};
+use clippy_utils::{contains_return, sym};
 use rustc_errors::Applicability;
 use rustc_hir::{
-    Block, Destination, Expr, ExprKind, HirId, InlineAsmOperand, Node, Pat, Stmt, StmtKind, StructTailExpr,
+    Block, Closure, Destination, Expr, ExprKind, HirId, InlineAsm, InlineAsmOperand, Node, Pat, Stmt, StmtKind,
+    StructTailExpr,
 };
 use rustc_lint::LateContext;
-use rustc_span::{BytePos, Span, sym};
+use rustc_span::{BytePos, Span};
 use std::iter::once;
 use std::ops::ControlFlow;
 
@@ -72,13 +74,45 @@ pub(super) fn check<'tcx>(
     }
 }
 
+pub(super) fn check_iterator_reduction<'tcx>(
+    cx: &LateContext<'tcx>,
+    expr: &'tcx Expr<'tcx>,
+    recv: &'tcx Expr<'tcx>,
+    closure: &'tcx Closure<'tcx>,
+) {
+    let closure_body = cx.tcx.hir_body(closure.body).value;
+    let body_ty = cx.typeck_results().expr_ty(closure_body);
+    if body_ty.is_never() && !contains_return(closure_body) {
+        span_lint_and_then(
+            cx,
+            NEVER_LOOP,
+            expr.span,
+            "this iterator reduction never loops (closure always diverges)",
+            |diag| {
+                let mut app = Applicability::HasPlaceholders;
+                let recv_snip = snippet_with_context(cx, recv.span, expr.span.ctxt(), "<iter>", &mut app).0;
+                diag.note("if you only need one element, `if let Some(x) = iter.next()` is clearer");
+                let sugg = format!("if let Some(x) = {recv_snip}.next() {{ ... }}");
+                diag.span_suggestion_verbose(expr.span, "consider this pattern", sugg, app);
+            },
+        );
+    }
+}
+
 fn contains_any_break_or_continue(block: &Block<'_>) -> bool {
     for_each_expr_without_closures(block, |e| match e.kind {
         ExprKind::Break(..) | ExprKind::Continue(..) => ControlFlow::Break(()),
+        ExprKind::InlineAsm(asm) if contains_label(asm) => ControlFlow::Break(()),
         ExprKind::Loop(..) => ControlFlow::Continue(Descend::No),
         _ => ControlFlow::Continue(Descend::Yes),
     })
     .is_some()
+}
+
+fn contains_label(asm: &InlineAsm<'_>) -> bool {
+    asm.operands
+        .iter()
+        .any(|(op, _span)| matches!(op, InlineAsmOperand::Label { .. }))
 }
 
 /// The `never_loop` analysis keeps track of three things:
@@ -240,7 +274,7 @@ fn is_label_for_block(cx: &LateContext<'_>, dest: &Destination) -> bool {
         .is_ok_and(|hir_id| matches!(cx.tcx.hir_node(hir_id), Node::Block(_)))
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn never_loop_expr<'tcx>(
     cx: &LateContext<'tcx>,
     expr: &Expr<'tcx>,
@@ -378,7 +412,15 @@ fn never_loop_expr<'tcx>(
             InlineAsmOperand::Const { .. } | InlineAsmOperand::SymFn { .. } | InlineAsmOperand::SymStatic { .. } => {
                 NeverLoopResult::Normal
             },
-            InlineAsmOperand::Label { block } => never_loop_block(cx, block, local_labels, main_loop_id),
+            InlineAsmOperand::Label { block } =>
+            // We do not know whether the label will be executed or not, so `Diverging` must be
+            // downgraded to `Normal`.
+            {
+                match never_loop_block(cx, block, local_labels, main_loop_id) {
+                    NeverLoopResult::Diverging { .. } => NeverLoopResult::Normal,
+                    result => result,
+                }
+            },
         })),
         ExprKind::OffsetOf(_, _)
         | ExprKind::Yield(_, _)

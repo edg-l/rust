@@ -2,10 +2,9 @@
 //! into a place.
 //! All high-level functions to write to memory work on places as destinations.
 
-use std::assert_matches::assert_matches;
-
 use either::{Either, Left, Right};
 use rustc_abi::{BackendRepr, HasDataLayout, Size};
+use rustc_data_structures::assert_matches;
 use rustc_middle::ty::Ty;
 use rustc_middle::ty::layout::TyAndLayout;
 use rustc_middle::{bug, mir, span_bug};
@@ -704,6 +703,7 @@ where
         // wrong type.
 
         let tcx = *self.tcx;
+        let will_later_validate = M::enforce_validity(self, layout);
         let Some(mut alloc) = self.get_place_alloc_mut(&MPlaceTy { mplace: dest, layout })? else {
             // zero-sized access
             return interp_ok(());
@@ -714,23 +714,31 @@ where
                 alloc.write_scalar(alloc_range(Size::ZERO, scalar.size()), scalar)?;
             }
             Immediate::ScalarPair(a_val, b_val) => {
-                let BackendRepr::ScalarPair(a, b) = layout.backend_repr else {
+                let BackendRepr::ScalarPair(_a, b) = layout.backend_repr else {
                     span_bug!(
                         self.cur_span(),
                         "write_immediate_to_mplace: invalid ScalarPair layout: {:#?}",
                         layout
                     )
                 };
-                let b_offset = a.size(&tcx).align_to(b.align(&tcx).abi);
+                let a_size = a_val.size();
+                let b_offset = a_size.align_to(b.align(&tcx).abi);
                 assert!(b_offset.bytes() > 0); // in `operand_field` we use the offset to tell apart the fields
 
                 // It is tempting to verify `b_offset` against `layout.fields.offset(1)`,
                 // but that does not work: We could be a newtype around a pair, then the
                 // fields do not match the `ScalarPair` components.
 
-                alloc.write_scalar(alloc_range(Size::ZERO, a_val.size()), a_val)?;
+                // In preparation, if we do *not* later reset the padding, we clear the entire
+                // destination now to ensure that no stray pointer fragments are being
+                // preserved (see <https://github.com/rust-lang/rust/issues/148470>).
+                // We can skip this if there is no padding (e.g. for wide pointers).
+                if !will_later_validate && a_size + b_val.size() != layout.size {
+                    alloc.write_uninit_full();
+                }
+
+                alloc.write_scalar(alloc_range(Size::ZERO, a_size), a_val)?;
                 alloc.write_scalar(alloc_range(b_offset, b_val.size()), b_val)?;
-                // We don't have to reset padding here, `write_immediate` will anyway do a validation run.
             }
             Immediate::Uninit => alloc.write_uninit_full(),
         }

@@ -6,33 +6,6 @@ use crate::path::{self, PathBuf};
 use crate::sys::cvt_io;
 use crate::{fmt, io};
 
-pub fn errno() -> i32 {
-    edos_rt::sys::errno() as i32
-}
-
-pub fn error_string(errno: i32) -> String {
-    if errno == 0 {
-        "operation successful".to_string()
-    } else {
-        match errno as u64 {
-            1 => "Invalid argument passed to a syscall".to_string(),
-            2 => "Memory allocation failed or memory exhausted".to_string(),
-            3 => "Bad memory address provided by userspace".to_string(),
-            4 => "Invalid or closed file descriptor".to_string(),
-            5 => "Operation requires permissions the caller lacks".to_string(),
-            6 => "Operation not permitted for the current caller.".to_string(),
-            7 => "Requested file or directory does not exist.".to_string(),
-            8 => "Attempted to create an entry that already exists.".to_string(),
-            9 => "Expected a directory but encountered a non-directory entry.".to_string(),
-            10 => "Operation required a regular file but encountered a directory".to_string(),
-            11 => "Device or filesystem has no space left for the operation".to_string(),
-            12 => "Write attempted on a read-only filesystem or device".to_string(),
-            13 => "Generic I/O failure surfaced from the filesystem or storage layer".to_string(),
-            _ => "unmapped kernel error code".to_string(),
-        }
-    }
-}
-
 #[inline]
 pub fn getcwd() -> io::Result<PathBuf> {
     let result = cvt_io(edos_rt::fs::getcwd())?;

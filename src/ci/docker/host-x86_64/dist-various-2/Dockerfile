@@ -85,9 +85,9 @@ RUN /tmp/build-fuchsia-toolchain.sh
 COPY host-x86_64/dist-various-2/build-x86_64-fortanix-unknown-sgx-toolchain.sh /tmp/
 RUN /tmp/build-x86_64-fortanix-unknown-sgx-toolchain.sh
 
-RUN curl -L https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-27/wasi-sdk-27.0-x86_64-linux.tar.gz | \
+RUN curl -L https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-29/wasi-sdk-29.0-x86_64-linux.tar.gz | \
   tar -xz
-ENV WASI_SDK_PATH=/tmp/wasi-sdk-27.0-x86_64-linux
+ENV WASI_SDK_PATH=/tmp/wasi-sdk-29.0-x86_64-linux
 
 COPY scripts/freebsd-toolchain.sh /tmp/
 RUN /tmp/freebsd-toolchain.sh i686
@@ -113,6 +113,7 @@ ENV TARGETS=$TARGETS,wasm32-wasip1
 ENV TARGETS=$TARGETS,wasm32-wasip1-threads
 ENV TARGETS=$TARGETS,wasm32-wasip2
 ENV TARGETS=$TARGETS,wasm32v1-none
+ENV TARGETS=$TARGETS,x86_64-unknown-linux-gnuasan
 ENV TARGETS=$TARGETS,x86_64-unknown-linux-gnux32
 ENV TARGETS=$TARGETS,x86_64-fortanix-unknown-sgx
 ENV TARGETS=$TARGETS,nvptx64-nvidia-cuda

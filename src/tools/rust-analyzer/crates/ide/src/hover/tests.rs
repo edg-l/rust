@@ -1,5 +1,5 @@
 use expect_test::{Expect, expect};
-use ide_db::{FileRange, base_db::SourceDatabase};
+use ide_db::{FileRange, MiniCore, base_db::SourceDatabase};
 use syntax::TextRange;
 
 use crate::{
@@ -8,7 +8,7 @@ use crate::{
 
 use hir::setup_tracing;
 
-const HOVER_BASE_CONFIG: HoverConfig = HoverConfig {
+const HOVER_BASE_CONFIG: HoverConfig<'_> = HoverConfig {
     links_in_hover: false,
     memory_layout: Some(MemoryLayoutHoverConfig {
         size: Some(MemoryLayoutHoverRenderKind::Both),
@@ -25,6 +25,7 @@ const HOVER_BASE_CONFIG: HoverConfig = HoverConfig {
     max_enum_variants_count: Some(5),
     max_subst_ty_len: super::SubstTyLen::Unlimited,
     show_drop_glue: true,
+    minicore: MiniCore::default(),
 };
 
 fn check_hover_no_result(#[rust_analyzer::rust_fixture] ra_fixture: &str) {
@@ -349,7 +350,7 @@ fn main() {
 fn hover_closure() {
     check(
         r#"
-//- minicore: copy
+//- minicore: copy, add, builtin_impls
 fn main() {
     let x = 2;
     let y = $0|z| x + z;
@@ -3279,7 +3280,7 @@ fn test_hover_no_memory_layout() {
 
     check_hover_no_memory_layout(
         r#"
-//- minicore: copy
+//- minicore: copy, add, builtin_impls
 fn main() {
     let x = 2;
     let y = $0|z| x + z;
@@ -4088,6 +4089,7 @@ fn foo() {
     let fo$0o = async { S };
 }
 //- /core.rs crate:core
+#![feature(lang_items)]
 pub mod future {
     #[lang = "future_trait"]
     pub trait Future {}
@@ -6306,6 +6308,8 @@ const FOO$0: (&str, &str) = {
     );
 }
 
+// FIXME(next-solver): this fails to normalize the const, probably due to the solver
+// refusing to give the impl because of the error type.
 #[test]
 fn hover_const_eval_in_generic_trait() {
     // Doesn't compile, but we shouldn't crash.
@@ -6327,12 +6331,16 @@ fn test() {
             *FOO*
 
             ```rust
-            ra_test_fixture::S
+            ra_test_fixture::Trait
             ```
 
             ```rust
-            const FOO: bool = true
+            const FOO: bool = false
             ```
+
+            ---
+
+            `Self` = `S<{unknown}>`
         "#]],
     );
 }
@@ -8192,19 +8200,31 @@ fn main() {
 
 #[test]
 fn hover_underscore_type() {
-    check_hover_no_result(
+    check(
         r#"
 fn main() {
     let x: _$0 = 0;
 }
 "#,
+        expect![[r#"
+            *_*
+            ```rust
+            i32
+            ```
+        "#]],
     );
-    check_hover_no_result(
+    check(
         r#"
 fn main() {
     let x: (_$0,) = (0,);
 }
 "#,
+        expect![[r#"
+            *_*
+            ```rust
+            i32
+            ```
+        "#]],
     );
 }
 
@@ -10802,7 +10822,7 @@ type Foo$0 = impl Sized;
 
             ---
 
-            needs Drop
+            no Drop
         "#]],
     );
     check(
@@ -11159,6 +11179,63 @@ fn foo() {
             ---
 
             no Drop
+        "#]],
+    );
+}
+
+#[test]
+fn hover_trait_impl_shows_generic_args() {
+    // Single generic arg
+    check(
+        r#"
+trait Foo<T> {
+    fn foo(&self) {}
+}
+
+impl<T> Foo<()> for T {
+    fn fo$0o(&self) {}
+}
+
+fn bar() {
+    ().foo();
+}
+"#,
+        expect![[r#"
+            *foo*
+
+            ```rust
+            ra_test_fixture
+            ```
+
+            ```rust
+            impl<T> Foo<()> for T
+            fn foo(&self)
+            ```
+        "#]],
+    );
+
+    // Multiple generic args
+    check(
+        r#"
+trait Foo<A, B> {
+    fn foo(&self) {}
+}
+
+impl<T> Foo<i32, u64> for T {
+    fn fo$0o(&self) {}
+}
+"#,
+        expect![[r#"
+            *foo*
+
+            ```rust
+            ra_test_fixture
+            ```
+
+            ```rust
+            impl<T> Foo<i32, u64> for T
+            fn foo(&self)
+            ```
         "#]],
     );
 }

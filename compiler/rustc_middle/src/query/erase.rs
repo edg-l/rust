@@ -2,6 +2,7 @@ use std::ffi::OsStr;
 use std::intrinsics::transmute_unchecked;
 use std::mem::MaybeUninit;
 
+use rustc_ast::tokenstream::TokenStream;
 use rustc_span::ErrorGuaranteed;
 use rustc_span::source_map::Spanned;
 
@@ -160,6 +161,10 @@ impl EraseType for Result<mir::ConstValue, mir::interpret::ErrorHandled> {
     type Result = [u8; size_of::<Result<mir::ConstValue, mir::interpret::ErrorHandled>>()];
 }
 
+impl EraseType for Option<(mir::ConstValue, Ty<'_>)> {
+    type Result = [u8; size_of::<Option<(mir::ConstValue, Ty<'_>)>>()];
+}
+
 impl EraseType for EvalToValTreeResult<'_> {
     type Result = [u8; size_of::<EvalToValTreeResult<'static>>()];
 }
@@ -184,6 +189,10 @@ impl EraseType
     >()];
 }
 
+impl EraseType for Result<&'_ TokenStream, ()> {
+    type Result = [u8; size_of::<Result<&'static TokenStream, ()>>()];
+}
+
 impl<T> EraseType for Option<&'_ T> {
     type Result = [u8; size_of::<Option<&'static ()>>()];
 }
@@ -200,8 +209,8 @@ impl EraseType for Option<mir::DestructuredConstant<'_>> {
     type Result = [u8; size_of::<Option<mir::DestructuredConstant<'static>>>()];
 }
 
-impl EraseType for Option<ty::ImplTraitHeader<'_>> {
-    type Result = [u8; size_of::<Option<ty::ImplTraitHeader<'static>>>()];
+impl EraseType for ty::ImplTraitHeader<'_> {
+    type Result = [u8; size_of::<ty::ImplTraitHeader<'static>>()];
 }
 
 impl EraseType for Option<ty::EarlyBinder<'_, Ty<'_>>> {
@@ -292,6 +301,8 @@ trivial! {
     rustc_ast::expand::allocator::AllocatorKind,
     rustc_hir::DefaultBodyStability,
     rustc_hir::attrs::Deprecation,
+    rustc_hir::attrs::EiiDecl,
+    rustc_hir::attrs::EiiImpl,
     rustc_data_structures::svh::Svh,
     rustc_errors::ErrorGuaranteed,
     rustc_hir::Constness,
@@ -313,6 +324,7 @@ trivial! {
     rustc_hir::Stability,
     rustc_hir::Upvar,
     rustc_index::bit_set::FiniteBitSet<u32>,
+    rustc_middle::middle::deduced_param_attrs::DeducedParamAttrs,
     rustc_middle::middle::dependency_format::Linkage,
     rustc_middle::middle::exported_symbols::SymbolExportInfo,
     rustc_middle::middle::resolve_bound_vars::ObjectLifetimeDefault,
@@ -336,7 +348,6 @@ trivial! {
     rustc_middle::ty::AsyncDestructor,
     rustc_middle::ty::BoundVariableKind,
     rustc_middle::ty::AnonConstKind,
-    rustc_middle::ty::DeducedParamAttrs,
     rustc_middle::ty::Destructor,
     rustc_middle::ty::fast_reject::SimplifiedType,
     rustc_middle::ty::ImplPolarity,
@@ -344,6 +355,7 @@ trivial! {
     rustc_middle::ty::UnusedGenericParams,
     rustc_middle::ty::util::AlwaysRequiresDrop,
     rustc_middle::ty::Visibility<rustc_span::def_id::DefId>,
+    rustc_middle::middle::codegen_fn_attrs::SanitizerFnAttrs,
     rustc_session::config::CrateType,
     rustc_session::config::EntryFnType,
     rustc_session::config::OptLevel,
@@ -361,7 +373,6 @@ trivial! {
     rustc_span::Symbol,
     rustc_span::Ident,
     rustc_target::spec::PanicStrategy,
-    rustc_target::spec::SanitizerSet,
     rustc_type_ir::Variance,
     u32,
     usize,
@@ -396,7 +407,7 @@ tcx_lifetime! {
     rustc_middle::ty::ClauseKind,
     rustc_middle::ty::ClosureTypeInfo,
     rustc_middle::ty::Const,
-    rustc_middle::ty::DestructuredConst,
+    rustc_middle::ty::DestructuredAdtConst,
     rustc_middle::ty::ExistentialTraitRef,
     rustc_middle::ty::FnSig,
     rustc_middle::ty::GenericArg,

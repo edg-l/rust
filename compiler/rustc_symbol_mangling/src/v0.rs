@@ -266,6 +266,9 @@ impl<'tcx> V0SymbolMangler<'tcx> {
                 self.print_const(start)?;
                 self.print_const(end)?;
             }
+            ty::PatternKind::NotNull => {
+                self.tcx.types.unit.print(self)?;
+            }
             ty::PatternKind::Or(patterns) => {
                 self.push("O");
                 for pat in patterns {
@@ -311,7 +314,7 @@ impl<'tcx> Printer<'tcx> for V0SymbolMangler<'tcx> {
         let parent_def_id = DefId { index: key.parent.unwrap(), ..impl_def_id };
 
         let self_ty = self.tcx.type_of(impl_def_id);
-        let impl_trait_ref = self.tcx.impl_trait_ref(impl_def_id);
+        let impl_trait_ref = self.tcx.impl_opt_trait_ref(impl_def_id);
         let generics = self.tcx.generics_of(impl_def_id);
         // We have two cases to worry about here:
         // 1. We're printing a nested item inside of an impl item, like an inner
@@ -645,7 +648,10 @@ impl<'tcx> Printer<'tcx> for V0SymbolMangler<'tcx> {
                         p.push_ident(name.as_str());
                         match projection.term.kind() {
                             ty::TermKind::Ty(ty) => ty.print(p),
-                            ty::TermKind::Const(c) => c.print(p),
+                            ty::TermKind::Const(c) => {
+                                p.push("K");
+                                c.print(p)
+                            }
                         }?;
                     }
                     ty::ExistentialPredicate::AutoTrait(def_id) => {
@@ -752,9 +758,8 @@ impl<'tcx> Printer<'tcx> for V0SymbolMangler<'tcx> {
                 dereferenced_const.print(self)?;
             }
 
-            ty::Array(..) | ty::Tuple(..) | ty::Adt(..) | ty::Slice(_) => {
-                let contents = self.tcx.destructure_const(ct);
-                let fields = contents.fields.iter().copied();
+            ty::Array(..) | ty::Tuple(..) | ty::Slice(_) => {
+                let fields = cv.to_branch().iter().copied();
 
                 let print_field_list = |this: &mut Self| {
                     for field in fields.clone() {
@@ -773,43 +778,51 @@ impl<'tcx> Printer<'tcx> for V0SymbolMangler<'tcx> {
                         self.push("T");
                         print_field_list(self)?;
                     }
-                    ty::Adt(def, args) => {
-                        let variant_idx =
-                            contents.variant.expect("destructed const of adt without variant idx");
-                        let variant_def = &def.variant(variant_idx);
-
-                        self.push("V");
-                        self.print_def_path(variant_def.def_id, args)?;
-
-                        match variant_def.ctor_kind() {
-                            Some(CtorKind::Const) => {
-                                self.push("U");
-                            }
-                            Some(CtorKind::Fn) => {
-                                self.push("T");
-                                print_field_list(self)?;
-                            }
-                            None => {
-                                self.push("S");
-                                for (field_def, field) in iter::zip(&variant_def.fields, fields) {
-                                    // HACK(eddyb) this mimics `print_path_with_simple`,
-                                    // instead of simply using `field_def.ident`,
-                                    // just to be able to handle disambiguators.
-                                    let disambiguated_field =
-                                        self.tcx.def_key(field_def.did).disambiguated_data;
-                                    let field_name = disambiguated_field.data.get_opt_name();
-                                    self.push_disambiguator(
-                                        disambiguated_field.disambiguator as u64,
-                                    );
-                                    self.push_ident(field_name.unwrap().as_str());
-
-                                    field.print(self)?;
-                                }
-                                self.push("E");
-                            }
-                        }
-                    }
                     _ => unreachable!(),
+                }
+            }
+            ty::Adt(def, args) => {
+                let contents = cv.destructure_adt_const();
+                let fields = contents.fields.iter().copied();
+
+                let print_field_list = |this: &mut Self| {
+                    for field in fields.clone() {
+                        field.print(this)?;
+                    }
+                    this.push("E");
+                    Ok(())
+                };
+
+                let variant_idx = contents.variant;
+                let variant_def = &def.variant(variant_idx);
+
+                self.push("V");
+                self.print_def_path(variant_def.def_id, args)?;
+
+                match variant_def.ctor_kind() {
+                    Some(CtorKind::Const) => {
+                        self.push("U");
+                    }
+                    Some(CtorKind::Fn) => {
+                        self.push("T");
+                        print_field_list(self)?;
+                    }
+                    None => {
+                        self.push("S");
+                        for (field_def, field) in iter::zip(&variant_def.fields, fields) {
+                            // HACK(eddyb) this mimics `print_path_with_simple`,
+                            // instead of simply using `field_def.ident`,
+                            // just to be able to handle disambiguators.
+                            let disambiguated_field =
+                                self.tcx.def_key(field_def.did).disambiguated_data;
+                            let field_name = disambiguated_field.data.get_opt_name();
+                            self.push_disambiguator(disambiguated_field.disambiguator as u64);
+                            self.push_ident(field_name.unwrap().as_str());
+
+                            field.print(self)?;
+                        }
+                        self.push("E");
+                    }
                 }
             }
             _ => {
@@ -874,18 +887,20 @@ impl<'tcx> Printer<'tcx> for V0SymbolMangler<'tcx> {
             DefPathData::ValueNs(_) => 'v',
             DefPathData::Closure => 'C',
             DefPathData::Ctor => 'c',
-            DefPathData::AnonConst => 'k',
+            DefPathData::AnonConst => 'K',
+            DefPathData::LateAnonConst => 'k',
             DefPathData::OpaqueTy => 'i',
             DefPathData::SyntheticCoroutineBody => 's',
             DefPathData::NestedStatic => 'n',
+            DefPathData::GlobalAsm => 'a',
 
             // These should never show up as `print_path_with_simple` arguments.
             DefPathData::CrateRoot
             | DefPathData::Use
-            | DefPathData::GlobalAsm
             | DefPathData::Impl
             | DefPathData::MacroNs(_)
             | DefPathData::LifetimeNs(_)
+            | DefPathData::DesugaredAnonymousLifetime
             | DefPathData::OpaqueLifetime(_)
             | DefPathData::AnonAssocTy(..) => {
                 bug!("symbol_names: unexpected DefPathData: {:?}", disambiguated_data.data)

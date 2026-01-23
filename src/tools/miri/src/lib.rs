@@ -17,7 +17,6 @@
 #![feature(derive_coerce_pointee)]
 #![feature(arbitrary_self_types)]
 #![feature(iter_advance_by)]
-#![cfg_attr(not(bootstrap), feature(duration_from_nanos_u128))]
 // Configure clippy and other lints
 #![allow(
     clippy::collapsible_else_if,
@@ -39,30 +38,30 @@
     clippy::needless_question_mark,
     clippy::needless_lifetimes,
     clippy::too_long_first_doc_paragraph,
-    // We don't use translatable diagnostics
-    rustc::diagnostic_outside_of_impl,
+    clippy::len_zero,
     // We are not implementing queries here so it's fine
     rustc::potential_query_instability,
-    rustc::untranslatable_diagnostic,
 )]
-#![warn(rust_2018_idioms, unqualified_local_imports, clippy::as_conversions)]
+#![warn(
+    rust_2018_idioms,
+    unqualified_local_imports,
+    clippy::as_conversions,
+    clippy::manual_let_else
+)]
 // Needed for rustdoc from bootstrap (with `-Znormalize-docs`).
 #![recursion_limit = "256"]
-
-// Some "regular" crates we want to share with rustc
-extern crate either;
-extern crate tracing;
 
 // The rustc crates we need
 extern crate rustc_abi;
 extern crate rustc_apfloat;
 extern crate rustc_ast;
+extern crate rustc_codegen_ssa;
 extern crate rustc_const_eval;
 extern crate rustc_data_structures;
 extern crate rustc_errors;
-extern crate rustc_hash;
 extern crate rustc_hir;
 extern crate rustc_index;
+extern crate rustc_log;
 extern crate rustc_middle;
 extern crate rustc_session;
 extern crate rustc_span;
@@ -96,8 +95,8 @@ pub use rustc_const_eval::interpret::*;
 // Resolve ambiguity.
 #[doc(no_inline)]
 pub use rustc_const_eval::interpret::{self, AllocMap, Provenance as _};
+use rustc_log::tracing::{self, info, trace};
 use rustc_middle::{bug, span_bug};
-use tracing::{info, trace};
 
 #[cfg(all(unix, feature = "native-lib"))]
 pub mod native_lib {
@@ -121,7 +120,7 @@ pub use crate::borrow_tracker::stacked_borrows::{
 };
 pub use crate::borrow_tracker::tree_borrows::{EvalContextExt as _, Tree};
 pub use crate::borrow_tracker::{
-    BorTag, BorrowTrackerMethod, EvalContextExt as _, RetagFields, TreeBorrowsParams,
+    BorTag, BorrowTrackerMethod, EvalContextExt as _, TreeBorrowsParams,
 };
 pub use crate::clock::{Instant, MonotonicClock};
 pub use crate::concurrency::cpu_affinity::MAX_CPUS;
@@ -138,10 +137,10 @@ pub use crate::concurrency::{GenmcConfig, GenmcCtx, run_genmc_mode};
 pub use crate::data_structures::dedup_range_map::DedupRangeMap;
 pub use crate::data_structures::mono_hash_map::MonoHashMap;
 pub use crate::diagnostics::{
-    EvalContextExt as _, NonHaltingDiagnostic, TerminationInfo, report_error,
+    EvalContextExt as _, NonHaltingDiagnostic, TerminationInfo, report_result,
 };
 pub use crate::eval::{MiriConfig, MiriEntryFnType, create_ecx, eval_entry};
-pub use crate::helpers::{AccessKind, EvalContextExt as _, ToU64 as _, ToUsize as _};
+pub use crate::helpers::{EvalContextExt as _, ToU64 as _, ToUsize as _};
 pub use crate::intrinsics::EvalContextExt as _;
 pub use crate::machine::{
     AlignmentCheck, AllocExtra, BacktraceStyle, DynMachineCallback, FloatRoundingErrorMode,

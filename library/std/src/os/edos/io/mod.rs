@@ -3,7 +3,7 @@
 use crate::fs::File;
 use crate::io;
 use crate::sys::cvt_io;
-use crate::sys_common::AsInner;
+use crate::sys::AsInner;
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait FileExt {

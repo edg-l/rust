@@ -10,9 +10,8 @@ use crate::path::Path;
 use crate::process::StdioPipes;
 use crate::sys::fd::FileDesc;
 use crate::sys::fs::File;
-use crate::sys::pipe::AnonPipe;
+use crate::sys::pipe::Pipe;
 use crate::sys::{cvt_io, decode_error_kind, unsupported};
-use crate::sys_common::FromInner;
 use crate::{fmt, io};
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -92,6 +91,10 @@ impl Command {
         self.env.iter()
     }
 
+    pub fn get_env_clear(&self) -> bool {
+        self.env.does_clear()
+    }
+
     pub fn get_current_dir(&self) -> Option<&Path> {
         self.cwd.as_ref().map(|cs| Path::new(cs))
     }
@@ -128,12 +131,12 @@ impl Command {
             Stdio::MakePipe => {
                 let (read_fd, write_fd) = edos_rt::process::pipe().unwrap();
 
-                pipes[0] = Some(AnonPipe::from_inner(FileDesc {
+                pipes[0] = Some(FileDesc {
                     inner: edos_rt::fd::FileDesc::from_raw_fd(
                         write_fd,
                         edos_rt::fd::OpenFlags::Create,
                     ),
-                }));
+                });
 
                 read_fd
             }
@@ -142,18 +145,18 @@ impl Command {
             Stdio::InheritFile(file) => file.0.inner.raw_fd(),
         };
 
-        let stdout = match self.stdin.as_ref().unwrap_or(&default) {
+        let stdout = match self.stdout.as_ref().unwrap_or(&default) {
             Stdio::Inherit => 1,
             Stdio::Null => unsupported()?,
             Stdio::MakePipe => {
                 let (read_fd, write_fd) = edos_rt::process::pipe().unwrap();
 
-                pipes[1] = Some(AnonPipe::from_inner(FileDesc {
+                pipes[1] = Some(FileDesc {
                     inner: edos_rt::fd::FileDesc::from_raw_fd(
                         read_fd,
                         edos_rt::fd::OpenFlags::Create,
                     ),
-                }));
+                });
 
                 write_fd
             }
@@ -162,18 +165,18 @@ impl Command {
             Stdio::InheritFile(file) => file.0.inner.raw_fd(),
         };
 
-        let stderr = match self.stdin.as_ref().unwrap_or(&default) {
+        let stderr = match self.stderr.as_ref().unwrap_or(&default) {
             Stdio::Inherit => 2,
             Stdio::Null => unsupported()?,
             Stdio::MakePipe => {
                 let (read_fd, write_fd) = edos_rt::process::pipe().unwrap();
 
-                pipes[2] = Some(AnonPipe::from_inner(FileDesc {
+                pipes[2] = Some(FileDesc {
                     inner: edos_rt::fd::FileDesc::from_raw_fd(
                         read_fd,
                         edos_rt::fd::OpenFlags::Create,
                     ),
-                }));
+                });
 
                 write_fd
             }
@@ -202,9 +205,9 @@ pub fn output(_cmd: &mut Command) -> io::Result<(ExitStatus, Vec<u8>, Vec<u8>)> 
     unsupported()
 }
 
-impl From<AnonPipe> for Stdio {
-    fn from(pipe: AnonPipe) -> Stdio {
-        Stdio::InheritFile(File(pipe.into_raw_fd()))
+impl From<Pipe> for Stdio {
+    fn from(pipe: Pipe) -> Stdio {
+        Stdio::InheritFile(File(pipe))
     }
 }
 
@@ -410,8 +413,50 @@ impl<'a> fmt::Debug for CommandArgs<'a> {
     }
 }
 
-impl From<crate::sys::fd::FileDesc> for Stdio {
-    fn from(value: crate::sys::fd::FileDesc) -> Self {
-        Self::InheritFile(File(value))
+
+pub type ChildPipe = crate::sys::pipe::Pipe;
+
+pub fn read_output(
+    p1: ChildPipe,
+    v1: &mut Vec<u8>,
+    p2: ChildPipe,
+    v2: &mut Vec<u8>,
+) -> io::Result<()> {
+    use edos_rt::fd::{PollFd, PollState, poll};
+
+    let mut entries = [
+        PollFd {
+            fd: p1.inner.raw_fd(),
+            interests: PollState {
+                readable: true,
+                writable: false,
+                error: true,
+                hangup: false,
+                invalid: false,
+            },
+            result: PollState::default(),
+        },
+        PollFd {
+            fd: p2.inner.raw_fd(),
+            interests: PollState {
+                readable: true,
+                writable: false,
+                error: true,
+                hangup: false,
+                invalid: false,
+            },
+            result: PollState::default(),
+        },
+    ];
+    let _result = cvt_io(cvt(poll(&mut entries, 0) as isize))?;
+
+    if entries[0].result.readable {
+        p1.read(v1)?;
     }
+
+    if entries[1].result.readable {
+        p2.read(v2)?;
+    }
+
+    Ok(())
 }

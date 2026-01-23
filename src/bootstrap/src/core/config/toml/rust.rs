@@ -33,6 +33,7 @@ define_config! {
         channel: Option<String> = "channel",
         musl_root: Option<String> = "musl-root",
         rpath: Option<bool> = "rpath",
+        rustflags: Option<Vec<String>> = "rustflags",
         strip: Option<bool> = "strip",
         frame_pointers: Option<bool> = "frame-pointers",
         stack_protector: Option<String> = "stack-protector",
@@ -60,6 +61,7 @@ define_config! {
         control_flow_guard: Option<bool> = "control-flow-guard",
         ehcont_guard: Option<bool> = "ehcont-guard",
         new_symbol_mangling: Option<bool> = "new-symbol-mangling",
+        annotate_moves_size_limit: Option<u64> = "annotate-moves-size-limit",
         profile_generate: Option<String> = "profile-generate",
         profile_use: Option<String> = "profile-use",
         // ignored; this is set from an env var set by bootstrap.py
@@ -321,7 +323,6 @@ pub fn check_incompatible_options_for_ci_rustc(
         debuginfo_level_rustc,
         llvm_tools,
         llvm_bitcode_linker,
-        lto,
         stack_protector,
         strip,
         jemalloc,
@@ -354,6 +355,7 @@ pub fn check_incompatible_options_for_ci_rustc(
         save_toolstates: _,
         codegen_backends: _,
         lld: _,
+        lto: _,
         deny_warnings: _,
         backtrace_on_ice: _,
         verify_llvm_ir: _,
@@ -364,6 +366,7 @@ pub fn check_incompatible_options_for_ci_rustc(
         control_flow_guard: _,
         ehcont_guard: _,
         new_symbol_mangling: _,
+        annotate_moves_size_limit: _,
         profile_generate: _,
         profile_use: _,
         download_rustc: _,
@@ -373,6 +376,7 @@ pub fn check_incompatible_options_for_ci_rustc(
         parallel_frontend_threads: _,
         bootstrap_override_lld: _,
         bootstrap_override_lld_legacy: _,
+        rustflags: _,
     } = ci_rust_config;
 
     // There are two kinds of checks for CI rustc incompatible options:
@@ -393,7 +397,6 @@ pub fn check_incompatible_options_for_ci_rustc(
     err!(current_rust_config.jemalloc, jemalloc, "rust");
     err!(current_rust_config.default_linker, default_linker, "rust");
     err!(current_rust_config.stack_protector, stack_protector, "rust");
-    err!(current_rust_config.lto, lto, "rust");
     err!(current_rust_config.std_features, std_features, "rust");
 
     warn!(current_rust_config.channel, channel, "rust");

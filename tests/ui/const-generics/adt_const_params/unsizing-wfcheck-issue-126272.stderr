@@ -53,7 +53,11 @@ LL |     nested: &'static Bar<dyn std::fmt::Debug>,
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ doesn't have a size known at compile-time
    |
    = help: the trait `Sized` is not implemented for `(dyn Debug + 'static)`
-   = help: the trait `Debug` is implemented for `Bar<T>`
+help: the trait `Debug` is implemented for `Bar<T>`
+  --> $DIR/unsizing-wfcheck-issue-126272.rs:19:10
+   |
+LL | #[derive(Debug, PartialEq, Eq, ConstParamTy)]
+   |          ^^^^^
 note: required for `Bar<(dyn Debug + 'static)>` to implement `Debug`
   --> $DIR/unsizing-wfcheck-issue-126272.rs:19:10
    |
@@ -83,7 +87,11 @@ LL | #[derive(Debug, PartialEq, Eq, ConstParamTy)]
 LL |     nested: &'static Bar<dyn std::fmt::Debug>,
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Eq` is not implemented for `dyn Debug`
    |
-   = help: the trait `Eq` is implemented for `Bar<T>`
+help: the trait `Eq` is implemented for `Bar<T>`
+  --> $DIR/unsizing-wfcheck-issue-126272.rs:19:28
+   |
+LL | #[derive(Debug, PartialEq, Eq, ConstParamTy)]
+   |                            ^^
 note: required for `Bar<dyn Debug>` to implement `Eq`
   --> $DIR/unsizing-wfcheck-issue-126272.rs:19:28
    |
@@ -91,7 +99,7 @@ LL | #[derive(Debug, PartialEq, Eq, ConstParamTy)]
    |                            ^^ unsatisfied trait bound introduced in this `derive` macro
    = note: 1 redundant requirement hidden
    = note: required for `&'static Bar<dyn Debug>` to implement `Eq`
-note: required by a bound in `AssertParamIsEq`
+note: required by a bound in `std::cmp::AssertParamIsEq`
   --> $SRC_DIR/core/src/cmp.rs:LL:COL
 
 error[E0277]: the size for values of type `dyn Debug` cannot be known at compilation time

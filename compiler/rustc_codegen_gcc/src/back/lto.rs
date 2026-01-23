@@ -21,15 +21,17 @@ use std::ffi::{CStr, CString};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use gccjit::{Context, OutputKind};
 use object::read::archive::ArchiveFile;
 use rustc_codegen_ssa::back::lto::{SerializedModule, ThinModule, ThinShared};
-use rustc_codegen_ssa::back::write::{CodegenContext, FatLtoInput};
+use rustc_codegen_ssa::back::write::{CodegenContext, FatLtoInput, SharedEmitter};
 use rustc_codegen_ssa::traits::*;
 use rustc_codegen_ssa::{ModuleCodegen, ModuleKind, looks_like_rust_object_file};
 use rustc_data_structures::memmap::Mmap;
-use rustc_errors::DiagCtxtHandle;
+use rustc_errors::{DiagCtxt, DiagCtxtHandle};
+use rustc_log::tracing::info;
 use rustc_middle::bug;
 use rustc_middle::dep_graph::WorkProduct;
 use rustc_session::config::Lto;
@@ -38,7 +40,7 @@ use tempfile::{TempDir, tempdir};
 
 use crate::back::write::save_temp_bitcode;
 use crate::errors::LtoBitcodeFromRlib;
-use crate::{GccCodegenBackend, GccContext, SyncContext, to_gcc_opt_level};
+use crate::{GccCodegenBackend, GccContext, LTO_SUPPORTED, LtoMode, SyncContext, to_gcc_opt_level};
 
 struct LtoData {
     // TODO(antoyo): use symbols_below_threshold.
@@ -110,10 +112,11 @@ fn save_as_file(obj: &[u8], path: &Path) -> Result<(), LtoBitcodeFromRlib> {
 /// for further optimization.
 pub(crate) fn run_fat(
     cgcx: &CodegenContext<GccCodegenBackend>,
+    shared_emitter: &SharedEmitter,
     each_linked_rlib_for_lto: &[PathBuf],
     modules: Vec<FatLtoInput<GccCodegenBackend>>,
 ) -> ModuleCodegen<GccContext> {
-    let dcx = cgcx.create_dcx();
+    let dcx = DiagCtxt::new(Box::new(shared_emitter.clone()));
     let dcx = dcx.handle();
     let lto_data = prepare_lto(cgcx, each_linked_rlib_for_lto, dcx);
     /*let symbols_below_threshold =
@@ -228,7 +231,7 @@ fn fat_lto(
             info!("linking {:?}", name);
             match bc_decoded {
                 SerializedModule::Local(ref module_buffer) => {
-                    module.module_llvm.should_combine_object_files = true;
+                    module.module_llvm.lto_mode = LtoMode::Fat;
                     module
                         .module_llvm
                         .context
@@ -281,14 +284,13 @@ impl ModuleBufferMethods for ModuleBuffer {
 /// can simply be copied over from the incr. comp. cache.
 pub(crate) fn run_thin(
     cgcx: &CodegenContext<GccCodegenBackend>,
+    dcx: DiagCtxtHandle<'_>,
     each_linked_rlib_for_lto: &[PathBuf],
     modules: Vec<(String, ThinBuffer)>,
     cached_modules: Vec<(SerializedModule<ModuleBuffer>, WorkProduct)>,
 ) -> (Vec<ThinModule<GccCodegenBackend>>, Vec<WorkProduct>) {
-    let dcx = cgcx.create_dcx();
-    let dcx = dcx.handle();
     let lto_data = prepare_lto(cgcx, each_linked_rlib_for_lto, dcx);
-    if cgcx.opts.cg.linker_plugin_lto.enabled() {
+    if cgcx.use_linker_plugin_lto {
         unreachable!(
             "We should never reach this case if the LTO step \
                       is deferred to the linker"
@@ -520,8 +522,6 @@ pub fn optimize_thin_module(
     thin_module: ThinModule<GccCodegenBackend>,
     _cgcx: &CodegenContext<GccCodegenBackend>,
 ) -> ModuleCodegen<GccContext> {
-    //let dcx = cgcx.create_dcx();
-
     //let module_name = &thin_module.shared.module_names[thin_module.idx];
     /*let tm_factory_config = TargetMachineFactoryConfig::new(cgcx, module_name.to_str().unwrap());
     let tm = (cgcx.tm_factory)(tm_factory_config).map_err(|e| write::llvm_err(&dcx, e))?;*/
@@ -533,7 +533,7 @@ pub fn optimize_thin_module(
     // that LLVM Context and Module.
     //let llcx = llvm::LLVMRustContextCreate(cgcx.fewer_names);
     //let llmod_raw = parse_module(llcx, module_name, thin_module.data(), &dcx)? as *const _;
-    let mut should_combine_object_files = false;
+    let mut lto_mode = LtoMode::None;
     let context = match thin_module.shared.thin_buffers.get(thin_module.idx) {
         Some(thin_buffer) => Arc::clone(&thin_buffer.context),
         None => {
@@ -544,7 +544,7 @@ pub fn optimize_thin_module(
                 SerializedModule::Local(ref module_buffer) => {
                     let path = module_buffer.0.to_str().expect("path");
                     context.add_driver_option(path);
-                    should_combine_object_files = true;
+                    lto_mode = LtoMode::Thin;
                     /*module.module_llvm.should_combine_object_files = true;
                     module
                         .module_llvm
@@ -559,11 +559,13 @@ pub fn optimize_thin_module(
             Arc::new(SyncContext::new(context))
         }
     };
+    let lto_supported = LTO_SUPPORTED.load(Ordering::SeqCst);
     let module = ModuleCodegen::new_regular(
         thin_module.name().to_string(),
         GccContext {
             context,
-            should_combine_object_files,
+            lto_mode,
+            lto_supported,
             // TODO(antoyo): use the correct relocation model here.
             relocation_model: RelocModel::Pic,
             temp_dir: None,
@@ -629,6 +631,7 @@ pub fn optimize_thin_module(
             save_temp_bitcode(cgcx, &module, "thin-lto-after-pm");
         }
     }*/
+    // FIXME: switch to #[expect] when the clippy bug is fixed.
     #[allow(clippy::let_and_return)]
     module
 }

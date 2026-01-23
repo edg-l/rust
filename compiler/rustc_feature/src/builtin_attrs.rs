@@ -132,25 +132,47 @@ pub struct AttributeTemplate {
     pub docs: Option<&'static str>,
 }
 
+pub enum AttrSuggestionStyle {
+    /// The suggestion is styled for a normal attribute.
+    /// The `AttrStyle` determines whether this is an inner or outer attribute.
+    Attribute(AttrStyle),
+    /// The suggestion is styled for an attribute embedded into another attribute.
+    /// For example, attributes inside `#[cfg_attr(true, attr(...)]`.
+    EmbeddedAttribute,
+    /// The suggestion is styled for macros that are parsed with attribute parsers.
+    /// For example, the `cfg!(predicate)` macro.
+    Macro,
+}
+
 impl AttributeTemplate {
-    pub fn suggestions(&self, style: AttrStyle, name: impl std::fmt::Display) -> Vec<String> {
-        let mut suggestions = vec![];
-        let inner = match style {
-            AttrStyle::Outer => "",
-            AttrStyle::Inner => "!",
+    pub fn suggestions(
+        &self,
+        style: AttrSuggestionStyle,
+        name: impl std::fmt::Display,
+    ) -> Vec<String> {
+        let (start, macro_call, end) = match style {
+            AttrSuggestionStyle::Attribute(AttrStyle::Outer) => ("#[", "", "]"),
+            AttrSuggestionStyle::Attribute(AttrStyle::Inner) => ("#![", "", "]"),
+            AttrSuggestionStyle::Macro => ("", "!", ""),
+            AttrSuggestionStyle::EmbeddedAttribute => ("", "", ""),
         };
+
+        let mut suggestions = vec![];
+
         if self.word {
-            suggestions.push(format!("#{inner}[{name}]"));
+            debug_assert!(macro_call.is_empty(), "Macro suggestions use list style");
+            suggestions.push(format!("{start}{name}{end}"));
         }
         if let Some(descr) = self.list {
             for descr in descr {
-                suggestions.push(format!("#{inner}[{name}({descr})]"));
+                suggestions.push(format!("{start}{name}{macro_call}({descr}){end}"));
             }
         }
-        suggestions.extend(self.one_of.iter().map(|&word| format!("#{inner}[{name}({word})]")));
+        suggestions.extend(self.one_of.iter().map(|&word| format!("{start}{name}({word}){end}")));
         if let Some(descr) = self.name_value_str {
+            debug_assert!(macro_call.is_empty(), "Macro suggestions use list style");
             for descr in descr {
-                suggestions.push(format!("#{inner}[{name} = \"{descr}\"]"));
+                suggestions.push(format!("{start}{name} = \"{descr}\"{end}"));
             }
         }
         suggestions.sort();
@@ -420,7 +442,7 @@ pub static BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
             List: &["predicate"],
             "https://doc.rust-lang.org/reference/conditional-compilation.html#the-cfg-attribute"
         ),
-        DuplicatesOk, EncodeCrossCrate::Yes
+        DuplicatesOk, EncodeCrossCrate::No
     ),
     ungated!(
         cfg_attr, Normal,
@@ -428,7 +450,7 @@ pub static BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
             List: &["predicate, attr1, attr2, ..."],
             "https://doc.rust-lang.org/reference/conditional-compilation.html#the-cfg_attr-attribute"
         ),
-        DuplicatesOk, EncodeCrossCrate::Yes
+        DuplicatesOk, EncodeCrossCrate::No
     ),
 
     // Testing:
@@ -652,6 +674,12 @@ pub static BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
         template!(Word, "https://doc.rust-lang.org/reference/attributes/codegen.html#the-naked-attribute"),
         WarnFollowing, EncodeCrossCrate::No
     ),
+    // See `TyAndLayout::pass_indirectly_in_non_rustic_abis` for details.
+    rustc_attr!(
+        rustc_pass_indirectly_in_non_rustic_abis, Normal, template!(Word), ErrorFollowing,
+        EncodeCrossCrate::No,
+        "types marked with `#[rustc_pass_indirectly_in_non_rustic_abis]` are always passed indirectly by non-Rustic ABIs"
+    ),
 
     // Limits:
     ungated!(
@@ -835,14 +863,6 @@ pub static BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
         EncodeCrossCrate::No, experimental!(register_tool),
     ),
 
-    // RFC 2632
-    // FIXME(const_trait_impl) remove this
-    gated!(
-        const_trait, Normal, template!(Word), WarnFollowing, EncodeCrossCrate::No, const_trait_impl,
-        "`const_trait` is a temporary placeholder for marking a trait that is suitable for `const` \
-        `impls` and all default bodies as `const`, which may be removed or renamed in the \
-        future."
-    ),
     // lang-team MCP 147
     gated!(
         deprecated_safe, Normal, template!(List: &[r#"since = "version", note = "...""#]), ErrorFollowing,
@@ -888,6 +908,15 @@ pub static BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
         EncodeCrossCrate::No, loop_match, experimental!(loop_match)
     ),
 
+    // The `#[pin_v2]` attribute is part of the `pin_ergonomics` experiment
+    // that allows structurally pinning, tracked in:
+    //
+    // - https://github.com/rust-lang/rust/issues/130494
+    gated!(
+        pin_v2, Normal, template!(Word), ErrorFollowing,
+        EncodeCrossCrate::Yes, pin_ergonomics, experimental!(pin_v2),
+    ),
+
     // ==========================================================================
     // Internal attributes: Stability, deprecation, and unsafe:
     // ==========================================================================
@@ -931,6 +960,11 @@ pub static BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     gated!(
         allow_internal_unsafe, Normal, template!(Word), WarnFollowing,
         EncodeCrossCrate::No, "allow_internal_unsafe side-steps the unsafe_code lint",
+    ),
+    gated!(
+        rustc_eii_foreign_item, Normal, template!(Word),
+        ErrorFollowing, EncodeCrossCrate::Yes, eii_internals,
+        "used internally to mark types with a `transparent` representation when it is guaranteed by the documentation",
     ),
     rustc_attr!(
         rustc_allowed_through_unstable_modules, Normal, template!(NameValueStr: "deprecation message"),
@@ -1089,13 +1123,18 @@ pub static BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
         template!(Word, List: &[r#""...""#]), DuplicatesOk,
         EncodeCrossCrate::Yes,
     ),
+    rustc_attr!(
+        rustc_offload_kernel, Normal,
+        template!(Word), DuplicatesOk,
+        EncodeCrossCrate::Yes,
+    ),
     // Traces that are left when `cfg` and `cfg_attr` attributes are expanded.
     // The attributes are not gated, to avoid stability errors, but they cannot be used in stable
     // or unstable code directly because `sym::cfg_(attr_)trace` are not valid identifiers, they
     // can only be generated by the compiler.
     ungated!(
         cfg_trace, Normal, template!(Word /* irrelevant */), DuplicatesOk,
-        EncodeCrossCrate::No
+        EncodeCrossCrate::Yes
     ),
     ungated!(
         cfg_attr_trace, Normal, template!(Word /* irrelevant */), DuplicatesOk,
@@ -1141,12 +1180,6 @@ pub static BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     // might not be stable during incremental compilation.
     rustc_attr!(
         rustc_lint_untracked_query_information, Normal, template!(Word),
-        WarnFollowing, EncodeCrossCrate::Yes,
-    ),
-    // Used by the `rustc::diagnostic_outside_of_impl` lints to assist in changes to diagnostic
-    // APIs. Any function with this attribute will be checked by that lint.
-    rustc_attr!(
-        rustc_lint_diagnostics, Normal, template!(Word),
         WarnFollowing, EncodeCrossCrate::Yes,
     ),
     // Used by the `rustc::bad_opt_access` lint to identify `DebuggingOptions` and `CodegenOptions`
@@ -1236,33 +1269,38 @@ pub static BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     rustc_attr!(
         rustc_as_ptr, Normal, template!(Word), ErrorFollowing,
         EncodeCrossCrate::Yes,
-        "`#[rustc_as_ptr]` is used to mark functions returning pointers to their inner allocations."
+        "`#[rustc_as_ptr]` is used to mark functions returning pointers to their inner allocations"
+    ),
+    rustc_attr!(
+        rustc_should_not_be_called_on_const_items, Normal, template!(Word), ErrorFollowing,
+        EncodeCrossCrate::Yes,
+        "`#[rustc_should_not_be_called_on_const_items]` is used to mark methods that don't make sense to be called on interior mutable consts"
     ),
     rustc_attr!(
         rustc_pass_by_value, Normal, template!(Word), ErrorFollowing,
         EncodeCrossCrate::Yes,
-        "`#[rustc_pass_by_value]` is used to mark types that must be passed by value instead of reference."
+        "`#[rustc_pass_by_value]` is used to mark types that must be passed by value instead of reference"
     ),
     rustc_attr!(
         rustc_never_returns_null_ptr, Normal, template!(Word), ErrorFollowing,
         EncodeCrossCrate::Yes,
-        "`#[rustc_never_returns_null_ptr]` is used to mark functions returning non-null pointers."
+        "`#[rustc_never_returns_null_ptr]` is used to mark functions returning non-null pointers"
     ),
     rustc_attr!(
         rustc_no_implicit_autorefs, AttributeType::Normal, template!(Word), ErrorFollowing, EncodeCrossCrate::Yes,
-        "`#[rustc_no_implicit_autorefs]` is used to mark functions for which an autoref to the dereference of a raw pointer should not be used as an argument."
+        "`#[rustc_no_implicit_autorefs]` is used to mark functions for which an autoref to the dereference of a raw pointer should not be used as an argument"
     ),
     rustc_attr!(
         rustc_coherence_is_core, AttributeType::CrateLevel, template!(Word), ErrorFollowing, EncodeCrossCrate::No,
-        "`#![rustc_coherence_is_core]` allows inherent methods on builtin types, only intended to be used in `core`."
+        "`#![rustc_coherence_is_core]` allows inherent methods on builtin types, only intended to be used in `core`"
     ),
     rustc_attr!(
         rustc_coinductive, AttributeType::Normal, template!(Word), WarnFollowing, EncodeCrossCrate::No,
-        "`#[rustc_coinductive]` changes a trait to be coinductive, allowing cycles in the trait solver."
+        "`#[rustc_coinductive]` changes a trait to be coinductive, allowing cycles in the trait solver"
     ),
     rustc_attr!(
         rustc_allow_incoherent_impl, AttributeType::Normal, template!(Word), ErrorFollowing, EncodeCrossCrate::No,
-        "`#[rustc_allow_incoherent_impl]` has to be added to all impl items of an incoherent inherent impl."
+        "`#[rustc_allow_incoherent_impl]` has to be added to all impl items of an incoherent inherent impl"
     ),
     rustc_attr!(
         rustc_preserve_ub_checks, AttributeType::CrateLevel, template!(Word), ErrorFollowing, EncodeCrossCrate::No,
@@ -1277,19 +1315,19 @@ pub static BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
         "`#[rustc_deny_explicit_impl]` enforces that a trait can have no user-provided impls"
     ),
     rustc_attr!(
-        rustc_do_not_implement_via_object,
+        rustc_dyn_incompatible_trait,
         AttributeType::Normal,
         template!(Word),
         ErrorFollowing,
         EncodeCrossCrate::No,
-        "`#[rustc_do_not_implement_via_object]` opts out of the automatic trait impl for trait objects \
-        (`impl Trait for dyn Trait`)"
+        "`#[rustc_dyn_incompatible_trait]` marks a trait as dyn-incompatible, \
+        even if it otherwise satisfies the requirements to be dyn-compatible."
     ),
     rustc_attr!(
         rustc_has_incoherent_inherent_impls, AttributeType::Normal, template!(Word),
         ErrorFollowing, EncodeCrossCrate::Yes,
         "`#[rustc_has_incoherent_inherent_impls]` allows the addition of incoherent inherent impls for \
-         the given type by annotating all impl items with `#[rustc_allow_incoherent_impl]`."
+         the given type by annotating all impl items with `#[rustc_allow_incoherent_impl]`"
     ),
 
     BuiltinAttribute {
@@ -1352,7 +1390,7 @@ pub static BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
         EncodeCrossCrate::No,
         "the `#[rustc_skip_during_method_dispatch]` attribute is used to exclude a trait \
         from method dispatch when the receiver is of the following type, for compatibility in \
-        editions < 2021 (array) or editions < 2024 (boxed_slice)."
+        editions < 2021 (array) or editions < 2024 (boxed_slice)"
     ),
     rustc_attr!(
         rustc_must_implement_one_of, Normal, template!(List: &["function1, function2, ..."]),
@@ -1377,6 +1415,10 @@ pub static BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     rustc_attr!(
         rustc_force_inline, Normal, template!(Word, NameValueStr: "reason"), WarnFollowing, EncodeCrossCrate::Yes,
         "`#[rustc_force_inline]` forces a free function to be inlined"
+    ),
+    rustc_attr!(
+        rustc_scalable_vector, Normal, template!(List: &["count"]), WarnFollowing, EncodeCrossCrate::Yes,
+        "`#[rustc_scalable_vector]` defines a scalable vector type"
     ),
 
     // ==========================================================================
@@ -1547,9 +1589,10 @@ pub static BUILTIN_ATTRIBUTE_MAP: LazyLock<FxHashMap<Symbol, &BuiltinAttribute>>
         map
     });
 
-pub fn is_stable_diagnostic_attribute(sym: Symbol, _features: &Features) -> bool {
+pub fn is_stable_diagnostic_attribute(sym: Symbol, features: &Features) -> bool {
     match sym {
         sym::on_unimplemented | sym::do_not_recommend => true,
+        sym::on_const => features.diagnostic_on_const(),
         _ => false,
     }
 }

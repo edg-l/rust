@@ -2,12 +2,12 @@ use crate::sym;
 use rustc_ast::Attribute;
 use rustc_ast::attr::AttributeExt;
 use rustc_attr_parsing::parse_version;
+use rustc_data_structures::smallvec::SmallVec;
 use rustc_hir::RustcVersion;
 use rustc_lint::LateContext;
 use rustc_session::Session;
 use rustc_span::Symbol;
 use serde::Deserialize;
-use smallvec::SmallVec;
 use std::iter::once;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -40,6 +40,7 @@ msrv_aliases! {
     1,71,0 { TUPLE_ARRAY_CONVERSIONS, BUILD_HASHER_HASH_ONE }
     1,70,0 { OPTION_RESULT_IS_VARIANT_AND, BINARY_HEAP_RETAIN }
     1,68,0 { PATH_MAIN_SEPARATOR_STR }
+    1,67,0 { ILOG2 }
     1,65,0 { LET_ELSE, POINTER_CAST_CONSTNESS }
     1,63,0 { CLONE_INTO, CONST_SLICE_FROM_REF }
     1,62,0 { BOOL_THEN_SOME, DEFAULT_ENUM_ATTRIBUTE, CONST_EXTERN_C_FN }

@@ -225,6 +225,12 @@ pub(crate) struct TraitDef<'a> {
     pub is_const: bool,
 
     pub is_staged_api_crate: bool,
+
+    /// The safety of the `impl`.
+    pub safety: Safety,
+
+    /// Whether the added `impl` should appear in rustdoc output.
+    pub document: bool,
 }
 
 pub(crate) struct MethodDef<'a> {
@@ -610,7 +616,7 @@ impl<'a> TraitDef<'a> {
                     defaultness: ast::Defaultness::Final,
                     ident,
                     generics: Generics::default(),
-                    where_clauses: ast::TyAliasWhereClauses::default(),
+                    after_where_clause: ast::WhereClause::default(),
                     bounds: Vec::new(),
                     ty: Some(type_def.to_ty(cx, self.span, type_ident, generics)),
                 })),
@@ -801,29 +807,38 @@ impl<'a> TraitDef<'a> {
                     rustc_ast::AttrItem {
                         unsafety: Safety::Default,
                         path: rustc_const_unstable,
-                        args: AttrArgs::Delimited(DelimArgs {
-                            dspan: DelimSpan::from_single(self.span),
-                            delim: rustc_ast::token::Delimiter::Parenthesis,
-                            tokens: [
-                                TokenKind::Ident(sym::feature, IdentIsRaw::No),
-                                TokenKind::Eq,
-                                TokenKind::lit(LitKind::Str, sym::derive_const, None),
-                                TokenKind::Comma,
-                                TokenKind::Ident(sym::issue, IdentIsRaw::No),
-                                TokenKind::Eq,
-                                TokenKind::lit(LitKind::Str, sym::derive_const_issue, None),
-                            ]
-                            .into_iter()
-                            .map(|kind| {
-                                TokenTree::Token(Token { kind, span: self.span }, Spacing::Alone)
-                            })
-                            .collect(),
-                        }),
+                        args: rustc_ast::ast::AttrItemKind::Unparsed(AttrArgs::Delimited(
+                            DelimArgs {
+                                dspan: DelimSpan::from_single(self.span),
+                                delim: rustc_ast::token::Delimiter::Parenthesis,
+                                tokens: [
+                                    TokenKind::Ident(sym::feature, IdentIsRaw::No),
+                                    TokenKind::Eq,
+                                    TokenKind::lit(LitKind::Str, sym::derive_const, None),
+                                    TokenKind::Comma,
+                                    TokenKind::Ident(sym::issue, IdentIsRaw::No),
+                                    TokenKind::Eq,
+                                    TokenKind::lit(LitKind::Str, sym::derive_const_issue, None),
+                                ]
+                                .into_iter()
+                                .map(|kind| {
+                                    TokenTree::Token(
+                                        Token { kind, span: self.span },
+                                        Spacing::Alone,
+                                    )
+                                })
+                                .collect(),
+                            },
+                        )),
                         tokens: None,
                     },
                     self.span,
                 ),
             )
+        }
+
+        if !self.document {
+            attrs.push(cx.attr_nested_word(sym::doc, sym::hidden, self.span));
         }
 
         cx.item(
@@ -832,16 +847,12 @@ impl<'a> TraitDef<'a> {
             ast::ItemKind::Impl(ast::Impl {
                 generics: trait_generics,
                 of_trait: Some(Box::new(ast::TraitImplHeader {
-                    safety: ast::Safety::Default,
+                    safety: self.safety,
                     polarity: ast::ImplPolarity::Positive,
                     defaultness: ast::Defaultness::Final,
-                    constness: if self.is_const {
-                        ast::Const::Yes(DUMMY_SP)
-                    } else {
-                        ast::Const::No
-                    },
                     trait_ref,
                 })),
+                constness: if self.is_const { ast::Const::Yes(DUMMY_SP) } else { ast::Const::No },
                 self_ty: self_type,
                 items: methods.into_iter().chain(associated_types).collect(),
             }),
@@ -975,16 +986,6 @@ impl<'a> MethodDef<'a> {
         f(cx, span, &substructure)
     }
 
-    fn get_ret_ty(
-        &self,
-        cx: &ExtCtxt<'_>,
-        trait_: &TraitDef<'_>,
-        generics: &Generics,
-        type_ident: Ident,
-    ) -> Box<ast::Ty> {
-        self.ret_ty.to_ty(cx, trait_.span, type_ident, generics)
-    }
-
     fn is_static(&self) -> bool {
         !self.explicit_self
     }
@@ -1057,10 +1058,14 @@ impl<'a> MethodDef<'a> {
             self_arg.into_iter().chain(nonself_args).collect()
         };
 
-        let ret_type = self.get_ret_ty(cx, trait_, generics, type_ident);
+        let ret_type = if let Ty::Unit = &self.ret_ty {
+            ast::FnRetTy::Default(span)
+        } else {
+            ast::FnRetTy::Ty(self.ret_ty.to_ty(cx, span, type_ident, generics))
+        };
 
         let method_ident = Ident::new(self.name, span);
-        let fn_decl = cx.fn_decl(args, ast::FnRetTy::Ty(ret_type));
+        let fn_decl = cx.fn_decl(args, ret_type);
         let body_block = body.into_block(cx, span);
 
         let trait_lo_sp = span.shrink_to_lo();
@@ -1086,6 +1091,7 @@ impl<'a> MethodDef<'a> {
                 contract: None,
                 body: Some(body_block),
                 define_opaque: None,
+                eii_impls: ThinVec::new(),
             })),
             tokens: None,
         })
@@ -1507,7 +1513,7 @@ impl<'a> TraitDef<'a> {
         struct_def: &'a VariantData,
         prefixes: &[String],
         by_ref: ByRef,
-    ) -> ThinVec<Box<ast::Pat>> {
+    ) -> ThinVec<ast::Pat> {
         prefixes
             .iter()
             .map(|prefix| {
@@ -1543,7 +1549,7 @@ impl<'a> TraitDef<'a> {
                                     attrs: ast::AttrVec::new(),
                                     id: ast::DUMMY_NODE_ID,
                                     span: pat.span.with_ctxt(self.span.ctxt()),
-                                    pat,
+                                    pat: Box::new(pat),
                                     is_placeholder: false,
                                 }
                             })

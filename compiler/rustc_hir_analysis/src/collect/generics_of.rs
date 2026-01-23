@@ -1,6 +1,6 @@
-use std::assert_matches::assert_matches;
 use std::ops::ControlFlow;
 
+use rustc_data_structures::assert_matches;
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::LocalDefId;
 use rustc_hir::intravisit::{self, Visitor, VisitorExt};
@@ -77,20 +77,6 @@ pub(super) fn generics_of(tcx: TyCtxt<'_>, def_id: LocalDefId) -> ty::Generics {
         // stable enough and does not need a feature gate anymore.
         Node::AnonConst(_) => {
             let parent_did = tcx.parent(def_id.to_def_id());
-
-            // We don't do this unconditionally because the `DefId` parent of an anon const
-            // might be an implicitly created closure during `async fn` desugaring. This would
-            // have the wrong generics.
-            //
-            // i.e. `async fn foo<'a>() { let a = [(); { 1 + 2 }]; bar().await() }`
-            // would implicitly have a closure in its body that would be the parent of
-            // the `{ 1 + 2 }` anon const. This closure's generics is simply a witness
-            // instead of `['a]`.
-            let parent_did = if let DefKind::AnonConst = tcx.def_kind(parent_did) {
-                parent_did
-            } else {
-                tcx.hir_get_parent_item(hir_id).to_def_id()
-            };
             debug!(?parent_did);
 
             let mut in_param_ty = false;

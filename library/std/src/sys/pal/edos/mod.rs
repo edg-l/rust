@@ -2,7 +2,6 @@
 
 pub mod futex;
 pub mod os;
-pub mod pipe;
 pub mod start;
 pub mod time;
 

@@ -60,6 +60,9 @@ declare_features! (
     (removed, allocator, "1.0.0", None, None),
     /// Allows a test to fail without failing the whole suite.
     (removed, allow_fail, "1.60.0", Some(46488), Some("removed due to no clear use cases"), 93416),
+    /// Allows users to enforce equality of associated constants `TraitImpl<AssocConst=3>`.
+    (removed, associated_const_equality, "1.94.0", Some(92827),
+     Some("merged into `min_generic_const_args`")),
     (removed, await_macro, "1.38.0", Some(50547),
      Some("subsumed by `.await` syntax"), 62293),
     /// Allows using the `box $expr` syntax.
@@ -102,9 +105,9 @@ declare_features! (
     /// Allows deriving traits as per `SmartPointer` specification
     (removed, derive_smart_pointer, "1.84.0", Some(123430), Some("replaced by `CoercePointee`"), 131284),
     /// Tells rustdoc to automatically generate `#[doc(cfg(...))]`.
-    (removed, doc_auto_cfg, "CURRENT_RUSTC_VERSION", Some(43781), Some("merged into `doc_cfg`"), 138907),
+    (removed, doc_auto_cfg, "1.92.0", Some(43781), Some("merged into `doc_cfg`"), 138907),
     /// Allows `#[doc(cfg_hide(...))]`.
-    (removed, doc_cfg_hide, "CURRENT_RUSTC_VERSION", Some(43781), Some("merged into `doc_cfg`"), 138907),
+    (removed, doc_cfg_hide, "1.92.0", Some(43781), Some("merged into `doc_cfg`"), 138907),
     /// Allows using `#[doc(keyword = "...")]`.
     (removed, doc_keyword, "1.58.0", Some(51315),
      Some("merged into `#![feature(rustdoc_internals)]`"), 90420),
@@ -189,6 +192,8 @@ declare_features! (
      Some("subsumed by `#![feature(allocator_internals)]`")),
     /// Allows use of unary negate on unsigned integers, e.g., -e for e: u8
     (removed, negate_unsigned, "1.0.0", Some(29645), None),
+    /// Allows diverging expressions to fall back to `!` rather than `()`.
+    (removed, never_type_fallback, "1.93.0", Some(65992), Some("removed in favor of unconditional fallback"), 148871),
     /// Allows `#[no_coverage]` on functions.
     /// The feature was renamed to `coverage_attribute` and the attribute to `#[coverage(on|off)]`
     (removed, no_coverage, "1.74.0", Some(84605), Some("renamed to `coverage_attribute`"), 114656),
@@ -269,6 +274,8 @@ declare_features! (
     /// Allows `#[link(kind = "static-nobundle", ...)]`.
     (removed, static_nobundle, "1.63.0", Some(37403),
      Some(r#"subsumed by `#[link(kind = "static", modifiers = "-bundle", ...)]`"#), 95818),
+    /// Allows string patterns to dereference values to match them.
+    (removed, string_deref_patterns, "1.94.0", Some(87121), Some("superseded by `deref_patterns`"), 150530),
     (removed, struct_inherit, "1.0.0", None, None),
     (removed, test_removed_feature, "1.0.0", None, None),
     /// Allows using items which are missing stability attributes

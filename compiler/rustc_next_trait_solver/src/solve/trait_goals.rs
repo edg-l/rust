@@ -4,7 +4,9 @@ use rustc_type_ir::data_structures::IndexSet;
 use rustc_type_ir::fast_reject::DeepRejectCtxt;
 use rustc_type_ir::inherent::*;
 use rustc_type_ir::lang_items::SolverTraitLangItem;
-use rustc_type_ir::solve::{CanonicalResponse, SizedTraitKind};
+use rustc_type_ir::solve::{
+    AliasBoundKind, CandidatePreferenceMode, CanonicalResponse, SizedTraitKind,
+};
 use rustc_type_ir::{
     self as ty, Interner, Movability, PredicatePolarity, TraitPredicate, TraitRef,
     TypeVisitableExt as _, TypingMode, Upcast as _, elaborate,
@@ -358,17 +360,15 @@ where
         }
 
         let cx = ecx.cx();
-        let tupled_inputs_and_output =
-            match structural_traits::extract_tupled_inputs_and_output_from_callable(
+        let Some(tupled_inputs_and_output) =
+            structural_traits::extract_tupled_inputs_and_output_from_callable(
                 cx,
                 goal.predicate.self_ty(),
                 goal_kind,
-            )? {
-                Some(a) => a,
-                None => {
-                    return ecx.forced_ambiguity(MaybeCause::Ambiguity);
-                }
-            };
+            )?
+        else {
+            return ecx.forced_ambiguity(MaybeCause::Ambiguity);
+        };
         let (inputs, output) = ecx.instantiate_binder_with_infer(tupled_inputs_and_output);
 
         // A built-in `Fn` impl only holds if the output is sized.
@@ -659,7 +659,7 @@ where
         }
 
         // `rustc_transmute` does not have support for type or const params
-        if goal.has_non_region_placeholders() {
+        if goal.predicate.has_non_region_placeholders() {
             return Err(NoSolution);
         }
 
@@ -1355,6 +1355,7 @@ where
     #[instrument(level = "debug", skip(self), ret)]
     pub(super) fn merge_trait_candidates(
         &mut self,
+        candidate_preference_mode: CandidatePreferenceMode,
         mut candidates: Vec<Candidate<I>>,
         failed_candidate_info: FailedCandidateInfo,
     ) -> Result<(CanonicalResponse<I>, Option<TraitGoalProvenVia>), NoSolution> {
@@ -1380,6 +1381,23 @@ where
             return Ok((candidate.result, Some(TraitGoalProvenVia::Misc)));
         }
 
+        // Extract non-nested alias bound candidates, will be preferred over where bounds if
+        // we're proving an auto-trait, sizedness trait or default trait.
+        if matches!(candidate_preference_mode, CandidatePreferenceMode::Marker)
+            && candidates.iter().any(|c| {
+                matches!(c.source, CandidateSource::AliasBound(AliasBoundKind::SelfBounds))
+            })
+        {
+            let alias_bounds: Vec<_> = candidates
+                .extract_if(.., |c| matches!(c.source, CandidateSource::AliasBound(..)))
+                .collect();
+            return if let Some((response, _)) = self.try_merge_candidates(&alias_bounds) {
+                Ok((response, Some(TraitGoalProvenVia::AliasBound)))
+            } else {
+                Ok((self.bail_with_ambiguity(&alias_bounds), None))
+            };
+        }
+
         // If there are non-global where-bounds, prefer where-bounds
         // (including global ones) over everything else.
         let has_non_global_where_bounds = candidates
@@ -1389,47 +1407,45 @@ where
             let where_bounds: Vec<_> = candidates
                 .extract_if(.., |c| matches!(c.source, CandidateSource::ParamEnv(_)))
                 .collect();
-            if let Some((response, info)) = self.try_merge_candidates(&where_bounds) {
-                match info {
-                    // If there's an always applicable candidate, the result of all
-                    // other candidates does not matter. This means we can ignore
-                    // them when checking whether we've reached a fixpoint.
-                    //
-                    // We always prefer the first always applicable candidate, even if a
-                    // later candidate is also always applicable and would result in fewer
-                    // reruns. We could slightly improve this by e.g. searching for another
-                    // always applicable candidate which doesn't depend on any cycle heads.
-                    //
-                    // NOTE: This is optimization is observable in case there is an always
-                    // applicable global candidate and another non-global candidate which only
-                    // applies because of a provisional result. I can't even think of a test
-                    // case where this would occur and even then, this would not be unsound.
-                    // Supporting this makes the code more involved, so I am just going to
-                    // ignore this for now.
-                    MergeCandidateInfo::AlwaysApplicable(i) => {
-                        for (j, c) in where_bounds.into_iter().enumerate() {
-                            if i != j {
-                                self.ignore_candidate_head_usages(c.head_usages)
-                            }
-                        }
-                        // If a where-bound does not apply, we don't actually get a
-                        // candidate for it. We manually track the head usages
-                        // of all failed `ParamEnv` candidates instead.
-                        self.ignore_candidate_head_usages(
-                            failed_candidate_info.param_env_head_usages,
-                        );
-                    }
-                    MergeCandidateInfo::EqualResponse => {}
-                }
-                return Ok((response, Some(TraitGoalProvenVia::ParamEnv)));
-            } else {
+            let Some((response, info)) = self.try_merge_candidates(&where_bounds) else {
                 return Ok((self.bail_with_ambiguity(&where_bounds), None));
             };
+            match info {
+                // If there's an always applicable candidate, the result of all
+                // other candidates does not matter. This means we can ignore
+                // them when checking whether we've reached a fixpoint.
+                //
+                // We always prefer the first always applicable candidate, even if a
+                // later candidate is also always applicable and would result in fewer
+                // reruns. We could slightly improve this by e.g. searching for another
+                // always applicable candidate which doesn't depend on any cycle heads.
+                //
+                // NOTE: This is optimization is observable in case there is an always
+                // applicable global candidate and another non-global candidate which only
+                // applies because of a provisional result. I can't even think of a test
+                // case where this would occur and even then, this would not be unsound.
+                // Supporting this makes the code more involved, so I am just going to
+                // ignore this for now.
+                MergeCandidateInfo::AlwaysApplicable(i) => {
+                    for (j, c) in where_bounds.into_iter().enumerate() {
+                        if i != j {
+                            self.ignore_candidate_head_usages(c.head_usages)
+                        }
+                    }
+                    // If a where-bound does not apply, we don't actually get a
+                    // candidate for it. We manually track the head usages
+                    // of all failed `ParamEnv` candidates instead.
+                    self.ignore_candidate_head_usages(failed_candidate_info.param_env_head_usages);
+                }
+                MergeCandidateInfo::EqualResponse => {}
+            }
+            return Ok((response, Some(TraitGoalProvenVia::ParamEnv)));
         }
 
-        if candidates.iter().any(|c| matches!(c.source, CandidateSource::AliasBound)) {
+        // Next, prefer any alias bound (nested or otherwise).
+        if candidates.iter().any(|c| matches!(c.source, CandidateSource::AliasBound(_))) {
             let alias_bounds: Vec<_> = candidates
-                .extract_if(.., |c| matches!(c.source, CandidateSource::AliasBound))
+                .extract_if(.., |c| matches!(c.source, CandidateSource::AliasBound(_)))
                 .collect();
             return if let Some((response, _)) = self.try_merge_candidates(&alias_bounds) {
                 Ok((response, Some(TraitGoalProvenVia::AliasBound)))
@@ -1470,7 +1486,9 @@ where
     ) -> Result<(CanonicalResponse<I>, Option<TraitGoalProvenVia>), NoSolution> {
         let (candidates, failed_candidate_info) =
             self.assemble_and_evaluate_candidates(goal, AssembleCandidatesFrom::All);
-        self.merge_trait_candidates(candidates, failed_candidate_info)
+        let candidate_preference_mode =
+            CandidatePreferenceMode::compute(self.cx(), goal.predicate.def_id());
+        self.merge_trait_candidates(candidate_preference_mode, candidates, failed_candidate_info)
     }
 
     fn try_stall_coroutine(&mut self, self_ty: I::Ty) -> Option<Result<Candidate<I>, NoSolution>> {

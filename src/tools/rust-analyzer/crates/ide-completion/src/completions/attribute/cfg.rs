@@ -2,7 +2,7 @@
 
 use ide_db::SymbolKind;
 use itertools::Itertools;
-use syntax::{AstToken, Direction, NodeOrToken, SyntaxKind, algo, ast::Ident};
+use syntax::{AstToken, Direction, NodeOrToken, SmolStr, SyntaxKind, algo, ast::Ident};
 
 use crate::{CompletionItem, completions::Completions, context::CompletionContext};
 
@@ -39,7 +39,7 @@ pub(crate) fn complete_cfg(acc: &mut Completions, ctx: &CompletionContext<'_>) {
             "target_os" => KNOWN_OS.iter().copied().for_each(add_completion),
             "target_vendor" => KNOWN_VENDOR.iter().copied().for_each(add_completion),
             "target_endian" => ["little", "big"].into_iter().for_each(add_completion),
-            name => ctx.krate.potential_cfg(ctx.db).get_cfg_values(name).cloned().for_each(|s| {
+            name => ctx.krate.potential_cfg(ctx.db).get_cfg_values(name).for_each(|s| {
                 let s = s.as_str();
                 let insert_text = format!(r#""{s}""#);
                 let mut item = CompletionItem::new(
@@ -56,10 +56,20 @@ pub(crate) fn complete_cfg(acc: &mut Completions, ctx: &CompletionContext<'_>) {
         None => ctx
             .krate
             .potential_cfg(ctx.db)
-            .get_cfg_keys()
-            .unique()
-            .map(|s| (s.as_str(), ""))
-            .chain(CFG_CONDITION.iter().copied())
+            .into_iter()
+            .map(|x| match x {
+                hir::CfgAtom::Flag(key) => (key.as_str(), "".into()),
+                hir::CfgAtom::KeyValue { key, .. } => (
+                    key.as_str(),
+                    if ctx.config.snippet_cap.is_some() {
+                        SmolStr::from_iter([key.as_str(), " = $0"])
+                    } else {
+                        SmolStr::default()
+                    },
+                ),
+            })
+            .chain(CFG_CONDITION.iter().map(|&(k, snip)| (k, SmolStr::new_static(snip))))
+            .unique_by(|&(s, _)| s)
             .for_each(|(s, snippet)| {
                 let mut item = CompletionItem::new(
                     SymbolKind::BuiltinAttr,

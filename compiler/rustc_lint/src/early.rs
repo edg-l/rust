@@ -5,7 +5,7 @@
 //! syntactical lints.
 
 use rustc_ast::visit::{self as ast_visit, Visitor, walk_list};
-use rustc_ast::{self as ast, HasAttrs};
+use rustc_ast::{self as ast, AttrVec, HasAttrs};
 use rustc_data_structures::stack::ensure_sufficient_stack;
 use rustc_errors::{BufferedEarlyLint, DecorateDiagCompat, LintBuffer};
 use rustc_feature::Features;
@@ -33,7 +33,6 @@ pub struct EarlyContextAndPass<'ecx, 'tcx, T: EarlyLintPass> {
 }
 
 impl<'ecx, 'tcx, T: EarlyLintPass> EarlyContextAndPass<'ecx, 'tcx, T> {
-    #[allow(rustc::diagnostic_outside_of_impl)]
     fn check_id(&mut self, id: ast::NodeId) {
         for early_lint in self.context.buffered.take(id) {
             let BufferedEarlyLint { span, node_id: _, lint_id, diagnostic } = early_lint;
@@ -135,7 +134,7 @@ impl<'ast, 'ecx, 'tcx, T: EarlyLintPass> ast_visit::Visitor<'ast>
         });
     }
 
-    fn visit_fn(&mut self, fk: ast_visit::FnKind<'ast>, span: Span, id: ast::NodeId) {
+    fn visit_fn(&mut self, fk: ast_visit::FnKind<'ast>, _: &AttrVec, span: Span, id: ast::NodeId) {
         lint_callback!(self, check_fn, fk, span, id);
         ast_visit::walk_fn(self, fk);
     }

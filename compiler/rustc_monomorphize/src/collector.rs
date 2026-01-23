@@ -267,7 +267,8 @@ pub(crate) struct UsageMap<'tcx> {
     // Maps every mono item to the mono items used by it.
     pub used_map: UnordMap<MonoItem<'tcx>, Vec<MonoItem<'tcx>>>,
 
-    // Maps every mono item to the mono items that use it.
+    // Maps each mono item with users to the mono items that use it.
+    // Be careful: subsets `used_map`, so unused items are vacant.
     user_map: UnordMap<MonoItem<'tcx>, Vec<MonoItem<'tcx>>>,
 }
 
@@ -765,7 +766,7 @@ impl<'a, 'tcx> MirVisitor<'tcx> for MirUsedCollector<'a, 'tcx> {
                 }
             }
             mir::Rvalue::Cast(
-                mir::CastKind::PointerCoercion(PointerCoercion::ReifyFnPointer, _),
+                mir::CastKind::PointerCoercion(PointerCoercion::ReifyFnPointer(_), _),
                 ref operand,
                 _,
             ) => {
@@ -1145,6 +1146,7 @@ fn find_tails_for_unsizing<'tcx>(
     debug_assert!(!target_ty.has_param(), "{target_ty} should be fully monomorphic");
 
     match (source_ty.kind(), target_ty.kind()) {
+        (&ty::Pat(source, _), &ty::Pat(target, _)) => find_tails_for_unsizing(tcx, source, target),
         (
             &ty::Ref(_, source_pointee, _),
             &ty::Ref(_, target_pointee, _) | &ty::RawPtr(target_pointee, _),
@@ -1561,14 +1563,25 @@ impl<'v> RootCollector<'_, 'v> {
                 // If we're collecting items eagerly, then recurse into all constants.
                 // Otherwise the value is only collected when explicitly mentioned in other items.
                 if self.strategy == MonoItemCollectionStrategy::Eager {
-                    if !self.tcx.generics_of(id.owner_id).own_requires_monomorphization()
-                        && let Ok(val) = self.tcx.const_eval_poly(id.owner_id.to_def_id())
-                    {
-                        collect_const_value(self.tcx, val, self.output);
+                    let def_id = id.owner_id.to_def_id();
+                    // Type Consts don't have bodies to evaluate
+                    // nor do they make sense as a static.
+                    if self.tcx.is_type_const(def_id) {
+                        // FIXME(mgca): Is this actually what we want? We may want to
+                        // normalize to a ValTree then convert to a const allocation and
+                        // collect that?
+                        return;
                     }
+                    if self.tcx.generics_of(id.owner_id).own_requires_monomorphization() {
+                        return;
+                    }
+                    let Ok(val) = self.tcx.const_eval_poly(def_id) else {
+                        return;
+                    };
+                    collect_const_value(self.tcx, val, self.output);
                 }
             }
-            DefKind::Impl { .. } => {
+            DefKind::Impl { of_trait: true } => {
                 if self.strategy == MonoItemCollectionStrategy::Eager {
                     create_mono_items_for_default_impls(self.tcx, id, self.output);
                 }
@@ -1581,7 +1594,7 @@ impl<'v> RootCollector<'_, 'v> {
     }
 
     fn process_impl_item(&mut self, id: hir::ImplItemId) {
-        if matches!(self.tcx.def_kind(id.owner_id), DefKind::AssocFn) {
+        if self.tcx.def_kind(id.owner_id) == DefKind::AssocFn {
             self.push_if_root(id.owner_id.def_id);
         }
     }
@@ -1642,11 +1655,13 @@ impl<'v> RootCollector<'_, 'v> {
                 MonoItemCollectionStrategy::Lazy => {
                     self.entry_fn.and_then(|(id, _)| id.as_local()) == Some(def_id)
                         || self.tcx.is_reachable_non_generic(def_id)
-                        || self
-                            .tcx
-                            .codegen_fn_attrs(def_id)
-                            .flags
-                            .contains(CodegenFnAttrFlags::RUSTC_STD_INTERNAL_SYMBOL)
+                        || {
+                            let flags = self.tcx.codegen_fn_attrs(def_id).flags;
+                            flags.intersects(
+                                CodegenFnAttrFlags::RUSTC_STD_INTERNAL_SYMBOL
+                                    | CodegenFnAttrFlags::EXTERNALLY_IMPLEMENTABLE_ITEM,
+                            )
+                        }
                 }
             }
     }
@@ -1715,11 +1730,9 @@ fn create_mono_items_for_default_impls<'tcx>(
     item: hir::ItemId,
     output: &mut MonoItems<'tcx>,
 ) {
-    let Some(impl_) = tcx.impl_trait_header(item.owner_id) else {
-        return;
-    };
+    let impl_ = tcx.impl_trait_header(item.owner_id);
 
-    if matches!(impl_.polarity, ty::ImplPolarity::Negative) {
+    if impl_.polarity == ty::ImplPolarity::Negative {
         return;
     }
 
@@ -1823,5 +1836,5 @@ pub(crate) fn collect_crate_mono_items<'tcx>(
 
 pub(crate) fn provide(providers: &mut Providers) {
     providers.hooks.should_codegen_locally = should_codegen_locally;
-    providers.items_of_instance = items_of_instance;
+    providers.queries.items_of_instance = items_of_instance;
 }

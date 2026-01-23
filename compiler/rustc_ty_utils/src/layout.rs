@@ -3,13 +3,13 @@ use rustc_abi::Integer::{I8, I32};
 use rustc_abi::Primitive::{self, Float, Int, Pointer};
 use rustc_abi::{
     AddressSpace, BackendRepr, FIRST_VARIANT, FieldIdx, FieldsShape, HasDataLayout, Layout,
-    LayoutCalculatorError, LayoutData, Niche, ReprOptions, Scalar, Size, StructKind, TagEncoding,
-    VariantIdx, Variants, WrappingRange,
+    LayoutCalculatorError, LayoutData, Niche, ReprOptions, ScalableElt, Scalar, Size, StructKind,
+    TagEncoding, VariantIdx, Variants, WrappingRange,
 };
 use rustc_hashes::Hash64;
 use rustc_hir::attrs::AttributeKind;
 use rustc_hir::find_attr;
-use rustc_index::IndexVec;
+use rustc_index::{Idx as _, IndexVec};
 use rustc_middle::bug;
 use rustc_middle::query::Providers;
 use rustc_middle::traits::ObligationCause;
@@ -216,9 +216,7 @@ fn layout_of_uncached<'tcx>(
             let mut layout = LayoutData::clone(&layout.0);
             match *pat {
                 ty::PatternKind::Range { start, end } => {
-                    if let BackendRepr::Scalar(scalar) | BackendRepr::ScalarPair(scalar, _) =
-                        &mut layout.backend_repr
-                    {
+                    if let BackendRepr::Scalar(scalar) = &mut layout.backend_repr {
                         scalar.valid_range_mut().start = extract_const_value(cx, ty, start)?
                             .try_to_bits(tcx, cx.typing_env)
                             .ok_or_else(|| error(cx, LayoutError::Unknown(ty)))?;
@@ -266,6 +264,25 @@ fn layout_of_uncached<'tcx>(
                         bug!("pattern type with range but not scalar layout: {ty:?}, {layout:?}")
                     }
                 }
+                ty::PatternKind::NotNull => {
+                    if let BackendRepr::Scalar(scalar) | BackendRepr::ScalarPair(scalar, _) =
+                        &mut layout.backend_repr
+                    {
+                        scalar.valid_range_mut().start = 1;
+                        let niche = Niche {
+                            offset: Size::ZERO,
+                            value: scalar.primitive(),
+                            valid_range: scalar.valid_range(cx),
+                        };
+
+                        layout.largest_niche = Some(niche);
+                    } else {
+                        bug!(
+                            "pattern type with `!null` pattern but not scalar/pair layout: {ty:?}, {layout:?}"
+                        )
+                    }
+                }
+
                 ty::PatternKind::Or(variants) => match *variants[0] {
                     ty::PatternKind::Range { .. } => {
                         if let BackendRepr::Scalar(scalar) = &mut layout.backend_repr {
@@ -282,7 +299,7 @@ fn layout_of_uncached<'tcx>(
                                             .try_to_bits(tcx, cx.typing_env)
                                             .ok_or_else(|| error(cx, LayoutError::Unknown(ty)))?,
                                     )),
-                                    ty::PatternKind::Or(_) => {
+                                    ty::PatternKind::NotNull | ty::PatternKind::Or(_) => {
                                         unreachable!("mixed or patterns are not allowed")
                                     }
                                 })
@@ -347,9 +364,18 @@ fn layout_of_uncached<'tcx>(
                             )
                         }
                     }
+                    ty::PatternKind::NotNull => bug!("or patterns can't contain `!null` patterns"),
                     ty::PatternKind::Or(..) => bug!("patterns cannot have nested or patterns"),
                 },
             }
+            // Pattern types contain their base as their sole field.
+            // This allows the rest of the compiler to process pattern types just like
+            // single field transparent Adts, and only the parts of the compiler that
+            // specifically care about pattern types will have to handle it.
+            layout.fields = FieldsShape::Arbitrary {
+                offsets: [Size::ZERO].into_iter().collect(),
+                in_memory_order: [FieldIdx::new(0)].into_iter().collect(),
+            };
             tcx.mk_layout(layout)
         }
 
@@ -541,6 +567,37 @@ fn layout_of_uncached<'tcx>(
             univariant(tys, kind)?
         }
 
+        // Scalable vector types
+        //
+        // ```rust (ignore, example)
+        // #[rustc_scalable_vector(3)]
+        // struct svuint32_t(u32);
+        // ```
+        ty::Adt(def, args)
+            if matches!(def.repr().scalable, Some(ScalableElt::ElementCount(..))) =>
+        {
+            let Some(element_ty) = def
+                .is_struct()
+                .then(|| &def.variant(FIRST_VARIANT).fields)
+                .filter(|fields| fields.len() == 1)
+                .map(|fields| fields[FieldIdx::ZERO].ty(tcx, args))
+            else {
+                let guar = tcx
+                    .dcx()
+                    .delayed_bug("#[rustc_scalable_vector] was applied to an invalid type");
+                return Err(error(cx, LayoutError::ReferencesError(guar)));
+            };
+            let Some(ScalableElt::ElementCount(element_count)) = def.repr().scalable else {
+                let guar = tcx
+                    .dcx()
+                    .delayed_bug("#[rustc_scalable_vector] was applied to an invalid type");
+                return Err(error(cx, LayoutError::ReferencesError(guar)));
+            };
+
+            let element_layout = cx.layout_of(element_ty)?;
+            map_layout(cx.calc.scalable_vector_type(element_layout, element_count as u64))?
+        }
+
         // SIMD vector types.
         ty::Adt(def, args) if def.repr().simd() => {
             // Supported SIMD vectors are ADTs with a single array field:
@@ -613,8 +670,8 @@ fn layout_of_uncached<'tcx>(
             // UnsafeCell and UnsafePinned both disable niche optimizations
             let is_special_no_niche = def.is_unsafe_cell() || def.is_unsafe_pinned();
 
-            let get_discriminant_type =
-                |min, max| abi::Integer::repr_discr(tcx, ty, &def.repr(), min, max);
+            let discr_range_of_repr =
+                |min, max| abi::Integer::discr_range_of_repr(tcx, ty, &def.repr(), min, max);
 
             let discriminants_iter = || {
                 def.is_enum()
@@ -637,7 +694,7 @@ fn layout_of_uncached<'tcx>(
                     def.is_enum(),
                     is_special_no_niche,
                     tcx.layout_scalar_valid_range(def.did()),
-                    get_discriminant_type,
+                    discr_range_of_repr,
                     discriminants_iter(),
                     !maybe_unsized,
                 )
@@ -662,7 +719,7 @@ fn layout_of_uncached<'tcx>(
                     def.is_enum(),
                     is_special_no_niche,
                     tcx.layout_scalar_valid_range(def.did()),
-                    get_discriminant_type,
+                    discr_range_of_repr,
                     discriminants_iter(),
                     !maybe_unsized,
                 ) else {

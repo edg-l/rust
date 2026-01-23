@@ -1,9 +1,8 @@
-use std::assert_matches::assert_matches;
 use std::marker::PhantomData;
 
 use rustc_data_structures::undo_log::{Rollback, UndoLogs};
-use rustc_data_structures::{snapshot_vec as sv, unify as ut};
-use rustc_middle::ty::{self, OpaqueHiddenType, OpaqueTypeKey};
+use rustc_data_structures::{assert_matches, snapshot_vec as sv, unify as ut};
+use rustc_middle::ty::{self, OpaqueTypeKey, ProvisionalHiddenType};
 use tracing::debug;
 
 use crate::infer::unify_key::{ConstVidKey, RegionVidKey};
@@ -19,7 +18,7 @@ pub struct Snapshot<'tcx> {
 #[derive(Clone)]
 pub(crate) enum UndoLog<'tcx> {
     DuplicateOpaqueType,
-    OpaqueTypes(OpaqueTypeKey<'tcx>, Option<OpaqueHiddenType<'tcx>>),
+    OpaqueTypes(OpaqueTypeKey<'tcx>, Option<ProvisionalHiddenType<'tcx>>),
     TypeVariables(type_variable::UndoLog<'tcx>),
     ConstUnificationTable(sv::UndoLog<ut::Delegate<ConstVidKey<'tcx>>>),
     IntUnificationTable(sv::UndoLog<ut::Delegate<ty::IntVid>>),

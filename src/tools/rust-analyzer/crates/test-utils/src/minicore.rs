@@ -34,7 +34,8 @@
 //!     eq: sized
 //!     error: fmt
 //!     fmt: option, result, transmute, coerce_unsized, copy, clone, derive
-//!     fmt_before_1_89_0: fmt
+//!     fmt_before_1_93_0: fmt
+//!     fmt_before_1_89_0: fmt_before_1_93_0
 //!     fn: sized, tuple
 //!     from: sized, result
 //!     future: pin
@@ -68,6 +69,7 @@
 //!     transmute:
 //!     try: infallible
 //!     tuple:
+//!     unary_ops:
 //!     unpin: sized
 //!     unsize: sized
 //!     write: fmt
@@ -78,6 +80,7 @@
 //!     offset_of:
 
 #![rustc_coherence_is_core]
+#![feature(lang_items)]
 
 pub mod marker {
     // region:sized
@@ -543,11 +546,11 @@ pub mod ptr {
     // endregion:non_null
 
     // region:addr_of
-    #[rustc_macro_transparency = "semitransparent"]
+    #[rustc_macro_transparency = "semiopaque"]
     pub macro addr_of($place:expr) {
         &raw const $place
     }
-    #[rustc_macro_transparency = "semitransparent"]
+    #[rustc_macro_transparency = "semiopaque"]
     pub macro addr_of_mut($place:expr) {
         &raw mut $place
     }
@@ -591,13 +594,13 @@ pub mod ops {
         impl<T: PointeeSized> Deref for &T {
             type Target = T;
             fn deref(&self) -> &T {
-                loop {}
+                *self
             }
         }
         impl<T: PointeeSized> Deref for &mut T {
             type Target = T;
             fn deref(&self) -> &T {
-                loop {}
+                *self
             }
         }
         // region:deref_mut
@@ -1056,12 +1059,33 @@ pub mod ops {
                 type Output = $t;
                 fn add(self, other: $t) -> $t { self + other }
             }
+            impl AddAssign for $t {
+                fn add_assign(&mut self, other: $t) { *self += other; }
+            }
         )*)
     }
 
     add_impl! { usize u8 u16 u32 u64 u128 isize i8 i16 i32 i64 i128 f16 f32 f64 f128 }
     // endregion:builtin_impls
     // endregion:add
+
+    // region:unary_ops
+    #[lang = "not"]
+    pub const trait Not {
+        type Output;
+
+        #[must_use]
+        fn not(self) -> Self::Output;
+    }
+
+    #[lang = "neg"]
+    pub const trait Neg {
+        type Output;
+
+        #[must_use = "this returns the result of the operation, without modifying the original"]
+        fn neg(self) -> Self::Output;
+    }
+    // endregion:unary_ops
 
     // region:coroutine
     mod coroutine {
@@ -1117,6 +1141,12 @@ pub mod cmp {
     }
 
     pub trait Eq: PartialEq<Self> + PointeeSized {}
+
+    // region:builtin_impls
+    impl PartialEq for () {
+        fn eq(&self, other: &()) -> bool { true }
+    }
+    // endregion:builtin_impls
 
     // region:derive
     #[rustc_builtin_macro]
@@ -1231,6 +1261,7 @@ pub mod fmt {
             Unknown,
         }
 
+        // region:fmt_before_1_93_0
         #[lang = "format_count"]
         pub enum Count {
             Is(usize),
@@ -1260,6 +1291,7 @@ pub mod fmt {
                 Placeholder { position, fill, align, flags, precision, width }
             }
         }
+        // endregion:fmt_before_1_93_0
 
         // region:fmt_before_1_89_0
         #[lang = "format_unsafe_arg"]
@@ -1275,6 +1307,7 @@ pub mod fmt {
         // endregion:fmt_before_1_89_0
     }
 
+    // region:fmt_before_1_93_0
     #[derive(Copy, Clone)]
     #[lang = "format_arguments"]
     pub struct Arguments<'a> {
@@ -1313,6 +1346,14 @@ pub mod fmt {
         }
         // endregion:!fmt_before_1_89_0
 
+        pub fn from_str_nonconst(s: &'static str) -> Arguments<'a> {
+            Self::from_str(s)
+        }
+
+        pub const fn from_str(s: &'static str) -> Arguments<'a> {
+            Arguments { pieces: &[s], fmt: None, args: &[] }
+        }
+
         pub const fn as_str(&self) -> Option<&'static str> {
             match (self.pieces, self.args) {
                 ([], []) => Some(""),
@@ -1321,6 +1362,41 @@ pub mod fmt {
             }
         }
     }
+    // endregion:fmt_before_1_93_0
+
+    // region:!fmt_before_1_93_0
+    #[lang = "format_arguments"]
+    #[derive(Copy, Clone)]
+    pub struct Arguments<'a> {
+        // This is a non-faithful representation of `core::fmt::Arguments`, because the real one
+        // is too complex for minicore.
+        message: Option<&'a str>,
+    }
+
+    impl<'a> Arguments<'a> {
+        pub unsafe fn new<const N: usize, const M: usize>(
+            _template: &'a [u8; N],
+            _args: &'a [rt::Argument<'a>; M],
+        ) -> Arguments<'a> {
+            Arguments { message: None }
+        }
+
+        pub fn from_str_nonconst(s: &'static str) -> Arguments<'a> {
+            Arguments { message: Some(s) }
+        }
+
+        pub const fn from_str(s: &'static str) -> Arguments<'a> {
+            Arguments { message: Some(s) }
+        }
+
+        pub fn as_str(&self) -> Option<&'static str> {
+            match self.message {
+                Some(s) => unsafe { Some(&*(s as *const str)) },
+                None => None,
+            }
+        }
+    }
+    // endregion:!fmt_before_1_93_0
 
     // region:derive
     pub(crate) mod derive {
@@ -1490,6 +1566,12 @@ pub mod pin {
     {
     }
     // endregion:dispatch_from_dyn
+    // region:coerce_unsized
+    impl<Ptr, U> crate::ops::CoerceUnsized<Pin<U>> for Pin<Ptr> where
+        Ptr: crate::ops::CoerceUnsized<U>
+    {
+    }
+    // endregion:coerce_unsized
 }
 // endregion:pin
 
@@ -1783,7 +1865,7 @@ mod panicking {
 
     #[lang = "panic"]
     pub const fn panic(expr: &'static str) -> ! {
-        panic_fmt(crate::fmt::Arguments::new_const(&[expr]))
+        panic_fmt(crate::fmt::Arguments::from_str(expr))
     }
 }
 // endregion:panic
@@ -1954,6 +2036,10 @@ pub mod num {
 // region:bool_impl
 #[lang = "bool"]
 impl bool {
+    pub fn then_some<T>(self, t: T) -> Option<T> {
+        if self { Some(t) } else { None }
+    }
+
     pub fn then<T, F: FnOnce() -> T>(self, f: F) -> Option<T> {
         if self { Some(f()) } else { None }
     }

@@ -15,7 +15,7 @@ use rustc_next_trait_solver::solve::{GoalEvaluation, SolverDelegateEvalExt as _}
 use tracing::{instrument, trace};
 
 use crate::solve::delegate::SolverDelegate;
-use crate::solve::inspect::{self, ProofTreeInferCtxtExt, ProofTreeVisitor};
+use crate::solve::inspect::{self, InferCtxtProofTreeExt, ProofTreeVisitor};
 use crate::solve::{Certainty, deeply_normalize_for_diagnostics};
 use crate::traits::{FulfillmentError, FulfillmentErrorCode, wf};
 
@@ -177,7 +177,11 @@ fn find_best_leaf_obligation<'tcx>(
                 )
                 .break_value()
                 .ok_or(())
+                // walk around the fact that the cause in `Obligation` is ignored by folders so that
+                // we can properly fudge the infer vars in cause code.
+                .map(|o| (o.cause.clone(), o))
         })
+        .map(|(cause, o)| PredicateObligation { cause, ..o })
         .unwrap_or(obligation);
     deeply_normalize_for_diagnostics(infcx, obligation.param_env, obligation)
 }
@@ -231,7 +235,6 @@ impl<'tcx> BestObligation<'tcx> {
                                         nested_goal.source(),
                                         GoalSource::ImplWhereBound
                                             | GoalSource::AliasBoundConstCondition
-                                            | GoalSource::InstantiateHigherRanked
                                             | GoalSource::AliasWellFormed
                                     ) && nested_goal.result().is_err()
                                 },
@@ -431,7 +434,7 @@ impl<'tcx> ProofTreeVisitor<'tcx> for BestObligation<'tcx> {
         } = candidate.kind()
             && tcx.do_not_recommend_impl(impl_def_id)
         {
-            trace!("#[do_not_recommend] -> exit");
+            trace!("#[diagnostic::do_not_recommend] -> exit");
             return ControlFlow::Break(self.obligation.clone());
         }
 
@@ -522,10 +525,6 @@ impl<'tcx> ProofTreeVisitor<'tcx> for BestObligation<'tcx> {
                         parent_host_pred,
                     ));
                     impl_where_bound_count += 1;
-                }
-                // Skip over a higher-ranked predicate.
-                (_, GoalSource::InstantiateHigherRanked) => {
-                    obligation = self.obligation.clone();
                 }
                 (ChildMode::PassThrough, _)
                 | (_, GoalSource::AliasWellFormed | GoalSource::AliasBoundConstCondition) => {

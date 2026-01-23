@@ -1,10 +1,10 @@
 //! Manages calling a concrete function (with known MIR body) with argument passing,
 //! and returning the return value to the caller.
-use std::assert_matches::assert_matches;
 use std::borrow::Cow;
 
 use either::{Left, Right};
 use rustc_abi::{self as abi, ExternAbi, FieldIdx, Integer, VariantIdx};
+use rustc_data_structures::assert_matches;
 use rustc_hir::def_id::DefId;
 use rustc_middle::ty::layout::{IntegerExt, TyAndLayout};
 use rustc_middle::ty::{self, AdtDef, Instance, Ty, VariantDef};
@@ -127,7 +127,7 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
         } else if all_fields_1zst(def.variant(var1))? {
             def.variant(var0)
         } else {
-            // No varant is all-1-ZST, so no NPO.
+            // No variant is all-1-ZST, so no NPO.
             return interp_ok(layout);
         };
         // The "relevant" variant must have exactly one field, and its type is the "inner" type.
@@ -283,7 +283,7 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
         'tcx: 'y,
     {
         assert_eq!(callee_ty, callee_abi.layout.ty);
-        if matches!(callee_abi.mode, PassMode::Ignore) {
+        if callee_abi.mode == PassMode::Ignore {
             // This one is skipped. Still must be made live though!
             if !already_live {
                 self.storage_live(callee_arg.as_local().unwrap())?;

@@ -21,7 +21,7 @@ use rustc_public::ItemKind;
 use rustc_public::crate_def::CrateDef;
 use rustc_public::mir::{ProjectionElem, Rvalue, StatementKind};
 use rustc_public::ty::{RigidTy, TyKind, UintTy};
-use std::assert_matches::assert_matches;
+use std::assert_matches;
 use std::io::Write;
 use std::ops::ControlFlow;
 
@@ -136,7 +136,9 @@ fn get_item<'a>(
     items: &'a rustc_public::CrateItems,
     item: (ItemKind, &str),
 ) -> Option<&'a rustc_public::CrateItem> {
-    items.iter().find(|crate_item| crate_item.kind() == item.0 && crate_item.name() == item.1)
+    items
+        .iter()
+        .find(|crate_item| crate_item.kind() == item.0 && crate_item.trimmed_name() == item.1)
 }
 
 /// This test will generate and analyze a dummy crate using the stable mir.

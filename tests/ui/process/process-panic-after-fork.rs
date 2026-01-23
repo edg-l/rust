@@ -5,9 +5,9 @@
 //@ ignore-fuchsia no fork
 //@ ignore-tvos fork is prohibited
 //@ ignore-watchos fork is prohibited
+//@ ignore-backends: gcc
 
 #![feature(rustc_private)]
-#![feature(never_type)]
 #![feature(panic_always_abort)]
 
 #![allow(invalid_from_utf8)]

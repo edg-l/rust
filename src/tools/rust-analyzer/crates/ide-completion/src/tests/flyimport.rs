@@ -1,4 +1,3 @@
-use base_db::salsa;
 use expect_test::{Expect, expect};
 
 use crate::{
@@ -17,10 +16,11 @@ fn check_with_config(
     expect: Expect,
 ) {
     let (db, position) = crate::tests::position(ra_fixture);
-    let (ctx, analysis) = crate::context::CompletionContext::new(&db, position, &config).unwrap();
+    hir::attach_db(&db, || {
+        let (ctx, analysis) =
+            crate::context::CompletionContext::new(&db, position, &config, None).unwrap();
 
-    let mut acc = crate::completions::Completions::default();
-    salsa::attach(ctx.db, || {
+        let mut acc = crate::completions::Completions::default();
         if let CompletionAnalysis::Name(NameContext { kind: NameKind::IdentPat(pat_ctx), .. }) =
             &analysis
         {
@@ -42,9 +42,9 @@ fn check_with_config(
                 _ => (),
             }
         }
-    });
 
-    expect.assert_eq(&super::render_completion_list(Vec::from(acc)));
+        expect.assert_eq(&super::render_completion_list(Vec::from(acc)));
+    });
 }
 
 #[test]
@@ -79,6 +79,7 @@ fn macro_fuzzy_completion() {
         r#"
 //- /lib.rs crate:dep
 /// Please call me as macro_with_curlies! {}
+#[rust_analyzer::macro_style(braces)]
 #[macro_export]
 macro_rules! macro_with_curlies {
     () => {}
@@ -1951,5 +1952,27 @@ fn foo() {
 }
         "#,
         expect![""],
+    );
+}
+
+#[test]
+fn multiple_matches_with_qualifier() {
+    check(
+        r#"
+//- /foo.rs crate:foo
+pub mod env {
+    pub fn var() {}
+    pub fn _var() {}
+}
+
+//- /bar.rs crate:bar deps:foo
+fn main() {
+    env::var$0
+}
+    "#,
+        expect![[r#"
+            fn _var() (use foo::env) fn()
+            fn var() (use foo::env)  fn()
+        "#]],
     );
 }

@@ -1,4 +1,5 @@
 use rustc_data_structures::fx::{FxIndexMap, FxIndexSet, IndexEntry};
+use rustc_data_structures::thin_vec::ThinVec;
 use rustc_hir as hir;
 use rustc_infer::infer::region_constraints::{ConstraintKind, RegionConstraintData};
 use rustc_middle::bug;
@@ -6,7 +7,6 @@ use rustc_middle::ty::{self, Region, Ty, fold_regions};
 use rustc_span::def_id::DefId;
 use rustc_span::symbol::{Symbol, kw};
 use rustc_trait_selection::traits::auto_trait::{self, RegionTarget};
-use thin_vec::ThinVec;
 use tracing::{debug, instrument};
 
 use crate::clean::{
@@ -126,6 +126,7 @@ fn synthesize_auto_trait_impl<'tcx>(
                 items: Vec::new(),
                 polarity,
                 kind: clean::ImplKind::Auto,
+                is_deprecated: false,
             })),
             item_id: clean::ItemId::Auto { trait_: trait_def_id, for_: item_def_id },
             cfg: None,

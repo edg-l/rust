@@ -27,7 +27,10 @@ macro_rules! arena_types {
                     rustc_middle::mir::Body<'tcx>
                 >,
             [decode] typeck_results: rustc_middle::ty::TypeckResults<'tcx>,
-            [decode] borrowck_result: rustc_middle::mir::DefinitionSiteHiddenTypes<'tcx>,
+            [decode] borrowck_result: rustc_data_structures::fx::FxIndexMap<
+                rustc_hir::def_id::LocalDefId,
+                rustc_middle::ty::DefinitionSiteHiddenType<'tcx>,
+            >,
             [] resolver: rustc_data_structures::steal::Steal<(
                 rustc_middle::ty::ResolverAstLowering,
                 std::sync::Arc<rustc_ast::Crate>,
@@ -44,7 +47,7 @@ macro_rules! arena_types {
                         rustc_middle::traits::query::DropckOutlivesResult<'tcx>
                     >
                 >,
-            [] normalize_canonicalized_projection_ty:
+            [] normalize_canonicalized_projection:
                 rustc_middle::infer::canonical::Canonical<'tcx,
                     rustc_middle::infer::canonical::QueryResponse<'tcx,
                         rustc_middle::traits::query::NormalizationResult<'tcx>
@@ -89,7 +92,7 @@ macro_rules! arena_types {
             [] name_set: rustc_data_structures::unord::UnordSet<rustc_span::Symbol>,
             [] autodiff_item: rustc_ast::expand::autodiff_attrs::AutoDiffItem,
             [] ordered_name_set: rustc_data_structures::fx::FxIndexSet<rustc_span::Symbol>,
-            [] valtree: rustc_middle::ty::ValTreeKind<'tcx>,
+            [] valtree: rustc_middle::ty::ValTreeKind<rustc_middle::ty::TyCtxt<'tcx>>,
             [] stable_order_of_exportable_impls:
                 rustc_data_structures::fx::FxIndexMap<rustc_hir::def_id::DefId, usize>,
 
@@ -116,6 +119,7 @@ macro_rules! arena_types {
             [decode] specialization_graph: rustc_middle::traits::specialization_graph::Graph,
             [] crate_inherent_impls: rustc_middle::ty::CrateInherentImpls,
             [] hir_owner_nodes: rustc_hir::OwnerNodes<'tcx>,
+            [decode] token_stream: rustc_ast::tokenstream::TokenStream,
         ]);
     )
 }

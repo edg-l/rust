@@ -56,7 +56,7 @@ impl DebugContext {
             // ty::FnDef(..) | ty::FnPtr(..)
             // ty::Closure(..)
             // ty::Adt(def, ..)
-            ty::Tuple(components) => self.tuple_type(tcx, type_dbg, ty, *components),
+            ty::Tuple(components) => self.tuple_type(tcx, type_dbg, ty, components),
             // ty::Param(_)
             // FIXME implement remaining types and add unreachable!() to the fallback branch
             _ => self.placeholder_for_type(tcx, type_dbg, ty),
@@ -109,7 +109,8 @@ impl DebugContext {
 
         let subrange_id = self.dwarf.unit.add(array_type_id, gimli::DW_TAG_subrange_type);
         let subrange_entry = self.dwarf.unit.get_mut(subrange_id);
-        subrange_entry.set(gimli::DW_AT_type, AttributeValue::UnitRef(self.array_size_type));
+        subrange_entry
+            .set(gimli::DW_AT_type, AttributeValue::UnitRef(self.array_size_type.unwrap()));
         subrange_entry.set(gimli::DW_AT_lower_bound, AttributeValue::Udata(0));
         subrange_entry.set(gimli::DW_AT_count, AttributeValue::Udata(len));
 
@@ -152,7 +153,7 @@ impl DebugContext {
         components: &'tcx [Ty<'tcx>],
     ) -> UnitEntryId {
         let components = components
-            .into_iter()
+            .iter()
             .map(|&ty| (ty, self.debug_type(tcx, type_dbg, ty)))
             .collect::<Vec<_>>();
 

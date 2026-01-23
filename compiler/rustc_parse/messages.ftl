@@ -122,7 +122,6 @@ parse_cannot_be_raw_lifetime = `{$ident}` cannot be a raw lifetime
 parse_catch_after_try = keyword `catch` cannot follow a `try` block
     .help = try using `match` on the result of the `try` block instead
 
-parse_cfg_attr_bad_delim = wrong `cfg_attr` delimiters
 parse_colon_as_semi = statements are terminated with a semicolon
     .suggestion = use a semicolon instead
 
@@ -162,6 +161,8 @@ parse_cr_doc_comment = bare CR not allowed in {$block ->
 parse_default_not_followed_by_item = `default` is not followed by an item
     .label = the `default` qualifier
     .note = only `fn`, `const`, `type`, or `impl` items may be prefixed by `default`
+
+parse_delegation_non_trait_impl_reuse = only trait impls can be reused
 
 parse_do_catch_syntax_removed = found removed `do catch` syntax
     .note = following RFC #2388, the new non-placeholder syntax is `try`
@@ -348,6 +349,7 @@ parse_frontmatter_invalid_opening_preceding_whitespace = invalid preceding white
 parse_frontmatter_length_mismatch = frontmatter close does not match the opening
     .label_opening = the opening here has {$len_opening} dashes...
     .label_close = ...while the close has {$len_close} dashes
+parse_frontmatter_too_many_dashes = too many `-` symbols: frontmatter openings may be delimited by up to 255 `-` symbols, but found {$len_opening}
 parse_frontmatter_unclosed = unclosed frontmatter
     .note = frontmatter opening here was not closed
 
@@ -513,7 +515,7 @@ parse_keyword_lifetime =
     lifetimes cannot use keyword names
 
 parse_kw_bad_case = keyword `{$kw}` is written in the wrong case
-    .suggestion = write it in the correct case
+    .suggestion = write it in {$case}
 
 parse_label_inner_attr_does_not_annotate_this = the inner attribute doesn't annotate this {$item}
 parse_label_unexpected_token = unexpected token
@@ -573,10 +575,6 @@ parse_macro_rules_missing_bang = expected `!` after `macro_rules`
 parse_macro_rules_visibility = can't qualify macro_rules invocation with `{$vis}`
     .suggestion = try exporting the macro
 
-parse_malformed_cfg_attr = malformed `cfg_attr` attribute input
-    .suggestion = missing condition and attribute
-    .note = for more information, visit <https://doc.rust-lang.org/reference/conditional-compilation.html#the-cfg_attr-attribute>
-
 parse_malformed_loop_label = malformed loop label
     .suggestion = use the correct loop label format
 
@@ -609,8 +607,6 @@ parse_maybe_recover_from_bad_type_plus =
 parse_maybe_report_ambiguous_plus =
     ambiguous `+` in a type
     .suggestion = use parentheses to disambiguate
-
-parse_meta_bad_delim_suggestion = the delimiters should be `(` and `)`
 
 parse_mismatched_closing_delimiter = mismatched closing delimiter: `{$delimiter}`
     .label_unmatched = mismatched closing delimiter
@@ -739,8 +735,6 @@ parse_or_in_let_chain = `||` operators are not supported in let chain conditions
 
 parse_or_pattern_not_allowed_in_fn_parameters = function parameters require top-level or-patterns in parentheses
 parse_or_pattern_not_allowed_in_let_binding = `let` bindings require top-level or-patterns in parentheses
-parse_out_of_range_hex_escape = out of range hex escape
-    .label = must be a character in the range [\x00-\x7f]
 
 parse_outer_attr_explanation = outer attributes, like `#[test]`, annotate the item following them
 
@@ -870,7 +864,6 @@ parse_too_short_hex_escape = numeric character escape is too short
 parse_trailing_vert_not_allowed = a trailing `{$token}` is not allowed in an or-pattern
 
 parse_trait_alias_cannot_be_auto = trait aliases cannot be `auto`
-parse_trait_alias_cannot_be_const = trait aliases cannot be `const`
 parse_trait_alias_cannot_be_unsafe = trait aliases cannot be `unsafe`
 
 parse_trait_impl_modifier_in_inherent_impl = inherent impls cannot be {$modifier_name}
@@ -974,6 +967,7 @@ parse_unknown_start_of_token = unknown start of token: {$escaped}
     .sugg_quotes = Unicode characters '“' (Left Double Quotation Mark) and '”' (Right Double Quotation Mark) look like '{$ascii_str}' ({$ascii_name}), but are not
     .sugg_other = Unicode character '{$ch}' ({$u_name}) looks like '{$ascii_str}' ({$ascii_name}), but it is not
     .help_null = source files must contain UTF-8 encoded text, unexpected null bytes might occur when a different encoding is used
+    .help_invisible_char = invisible characters like '{$escaped}' are not usually visible in text editors
     .note_repeats = character appears {$repeats ->
         [one] once more
         *[other] {$repeats} more times
@@ -1011,6 +1005,9 @@ parse_use_if_else = use an `if-else` expression instead
 
 parse_use_let_not_auto = write `let` instead of `auto` to introduce a new variable
 parse_use_let_not_var = write `let` instead of `var` to introduce a new variable
+
+parse_varargs_without_pattern = missing pattern for `...` argument
+    .suggestion = name the argument, or use `_` to continue ignoring it
 
 parse_visibility_not_followed_by_item = visibility `{$vis}` is not followed by an item
     .label = the visibility

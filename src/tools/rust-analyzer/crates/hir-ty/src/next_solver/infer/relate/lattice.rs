@@ -18,19 +18,21 @@
 //! [lattices]: https://en.wikipedia.org/wiki/Lattice_(order)
 
 use rustc_type_ir::{
-    AliasRelationDirection, TypeVisitableExt, Upcast, Variance,
+    AliasRelationDirection, Interner, TypeVisitableExt, Upcast, Variance,
     inherent::{IntoKind, Span as _},
     relate::{
         Relate, StructurallyRelateAliases, TypeRelation, VarianceDiagInfo,
-        combine::{PredicateEmittingRelation, super_combine_consts, super_combine_tys},
+        combine::{
+            PredicateEmittingRelation, combine_ty_args, super_combine_consts, super_combine_tys,
+        },
     },
 };
 
 use crate::next_solver::{
-    AliasTy, Binder, Const, DbInterner, Goal, ParamEnv, Predicate, PredicateKind, Region, Span, Ty,
-    TyKind,
+    AliasTy, Binder, Const, DbInterner, GenericArgs, Goal, ParamEnv, Predicate, PredicateKind,
+    Region, SolverDefId, Span, Ty, TyKind,
     infer::{
-        DefineOpaqueTypes, InferCtxt, TypeTrace,
+        InferCtxt, TypeTrace,
         relate::RelateResult,
         traits::{Obligation, PredicateObligations},
     },
@@ -82,6 +84,19 @@ impl<'db> TypeRelation<DbInterner<'db>> for LatticeOp<'_, 'db> {
         self.infcx.interner
     }
 
+    fn relate_ty_args(
+        &mut self,
+        a_ty: Ty<'db>,
+        b_ty: Ty<'db>,
+        def_id: SolverDefId,
+        a_args: GenericArgs<'db>,
+        b_args: GenericArgs<'db>,
+        mk: impl FnOnce(GenericArgs<'db>) -> Ty<'db>,
+    ) -> RelateResult<'db, Ty<'db>> {
+        let variances = self.cx().variances_of(def_id);
+        combine_ty_args(self.infcx, self, a_ty, b_ty, variances, a_args, b_args, mk)
+    }
+
     fn relate_with_variance<T: Relate<DbInterner<'db>>>(
         &mut self,
         variance: Variance,
@@ -92,10 +107,7 @@ impl<'db> TypeRelation<DbInterner<'db>> for LatticeOp<'_, 'db> {
         match variance {
             Variance::Invariant => {
                 self.obligations.extend(
-                    self.infcx
-                        .at(&self.trace.cause, self.param_env)
-                        .eq_trace(DefineOpaqueTypes::Yes, self.trace.clone(), a, b)?
-                        .into_obligations(),
+                    self.infcx.at(&self.trace.cause, self.param_env).eq(a, b)?.into_obligations(),
                 );
                 Ok(a)
             }
@@ -213,12 +225,12 @@ impl<'infcx, 'db> LatticeOp<'infcx, 'db> {
         let at = self.infcx.at(&self.trace.cause, self.param_env);
         match self.kind {
             LatticeOpKind::Glb => {
-                self.obligations.extend(at.sub(DefineOpaqueTypes::Yes, v, a)?.into_obligations());
-                self.obligations.extend(at.sub(DefineOpaqueTypes::Yes, v, b)?.into_obligations());
+                self.obligations.extend(at.sub(v, a)?.into_obligations());
+                self.obligations.extend(at.sub(v, b)?.into_obligations());
             }
             LatticeOpKind::Lub => {
-                self.obligations.extend(at.sub(DefineOpaqueTypes::Yes, a, v)?.into_obligations());
-                self.obligations.extend(at.sub(DefineOpaqueTypes::Yes, b, v)?.into_obligations());
+                self.obligations.extend(at.sub(a, v)?.into_obligations());
+                self.obligations.extend(at.sub(b, v)?.into_obligations());
             }
         }
         Ok(())

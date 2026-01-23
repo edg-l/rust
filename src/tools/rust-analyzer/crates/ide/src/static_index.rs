@@ -4,14 +4,13 @@
 use arrayvec::ArrayVec;
 use hir::{Crate, Module, Semantics, db::HirDatabase};
 use ide_db::{
-    FileId, FileRange, FxHashMap, FxHashSet, RootDatabase,
-    base_db::{RootQueryDb, SourceDatabase, VfsPath, salsa},
+    FileId, FileRange, FxHashMap, FxHashSet, MiniCore, RootDatabase,
+    base_db::{RootQueryDb, SourceDatabase, VfsPath},
     defs::{Definition, IdentClass},
     documentation::Documentation,
     famous_defs::FamousDefs,
 };
-use span::Edition;
-use syntax::{AstNode, SyntaxKind::*, SyntaxNode, SyntaxToken, T, TextRange};
+use syntax::{AstNode, SyntaxNode, SyntaxToken, TextRange};
 
 use crate::navigation_target::UpmappingResult;
 use crate::{
@@ -42,9 +41,18 @@ pub struct ReferenceData {
 
 #[derive(Debug)]
 pub struct TokenStaticData {
-    pub documentation: Option<Documentation>,
+    // FIXME: Make this have the lifetime of the database.
+    pub documentation: Option<Documentation<'static>>,
     pub hover: Option<HoverResult>,
+    /// The position of the token itself.
+    ///
+    /// For example, in `fn foo() {}` this is the position of `foo`.
     pub definition: Option<FileRange>,
+    /// The position of the entire definition that this token belongs to.
+    ///
+    /// For example, in `fn foo() {}` this is the position from `fn`
+    /// to the closing brace.
+    pub definition_body: Option<FileRange>,
     pub references: Vec<ReferenceData>,
     pub moniker: Option<MonikerResult>,
     pub display_name: Option<String>,
@@ -94,7 +102,7 @@ pub struct StaticIndexedFile {
 
 fn all_modules(db: &dyn HirDatabase) -> Vec<Module> {
     let mut worklist: Vec<_> =
-        Crate::all(db).into_iter().map(|krate| krate.root_module()).collect();
+        Crate::all(db).into_iter().map(|krate| krate.root_module(db)).collect();
     let mut modules = Vec::new();
 
     while let Some(module) = worklist.pop() {
@@ -109,7 +117,7 @@ fn documentation_for_definition(
     sema: &Semantics<'_, RootDatabase>,
     def: Definition,
     scope_node: &SyntaxNode,
-) -> Option<Documentation> {
+) -> Option<Documentation<'static>> {
     let famous_defs = match &def {
         Definition::BuiltinType(_) => Some(FamousDefs(sema, sema.scope(scope_node)?.krate())),
         _ => None,
@@ -124,15 +132,16 @@ fn documentation_for_definition(
             })
             .to_display_target(sema.db),
     )
+    .map(Documentation::into_owned)
 }
 
 // FIXME: This is a weird function
-fn get_definitions(
-    sema: &Semantics<'_, RootDatabase>,
+fn get_definitions<'db>(
+    sema: &Semantics<'db, RootDatabase>,
     token: SyntaxToken,
-) -> Option<ArrayVec<Definition, 2>> {
+) -> Option<ArrayVec<(Definition, Option<hir::GenericSubstitution<'db>>), 2>> {
     for token in sema.descend_into_macros_exact(token) {
-        let def = IdentClass::classify_token(sema, &token).map(IdentClass::definitions_no_ops);
+        let def = IdentClass::classify_token(sema, &token).map(IdentClass::definitions);
         if let Some(defs) = def
             && !defs.is_empty()
         {
@@ -160,6 +169,7 @@ impl StaticIndex<'_> {
                     type_hints: true,
                     sized_bound: false,
                     parameter_hints: true,
+                    parameter_hints_for_missing_arguments: false,
                     generic_parameter_hints: crate::GenericParameterHints {
                         type_hints: false,
                         lifetime_hints: false,
@@ -173,6 +183,8 @@ impl StaticIndex<'_> {
                     adjustment_hints_mode: AdjustmentHintsMode::Prefix,
                     adjustment_hints_hide_outside_unsafe: false,
                     implicit_drop_hints: false,
+                    implied_dyn_trait_hints: false,
+                    hide_inferred_type_hints: false,
                     hide_named_constructor_hints: false,
                     hide_closure_initialization_hints: false,
                     hide_closure_parameter_hints: false,
@@ -184,6 +196,7 @@ impl StaticIndex<'_> {
                     closing_brace_hints_min_lines: Some(25),
                     fields_to_resolve: InlayFieldsToResolve::empty(),
                     range_exclusive_hints: false,
+                    minicore: MiniCore::default(),
                 },
                 file_id,
                 None,
@@ -192,10 +205,7 @@ impl StaticIndex<'_> {
         // hovers
         let sema = hir::Semantics::new(self.db);
         let root = sema.parse_guess_edition(file_id).syntax().clone();
-        let edition = sema
-            .attach_first_edition(file_id)
-            .map(|it| it.edition(self.db))
-            .unwrap_or(Edition::CURRENT);
+        let edition = sema.attach_first_edition(file_id).edition(sema.db);
         let display_target = match sema.first_crate(file_id) {
             Some(krate) => krate.to_display_target(sema.db),
             None => return,
@@ -215,45 +225,42 @@ impl StaticIndex<'_> {
             max_enum_variants_count: Some(5),
             max_subst_ty_len: SubstTyLen::Unlimited,
             show_drop_glue: true,
+            minicore: MiniCore::default(),
         };
-        let tokens = tokens.filter(|token| {
-            matches!(
-                token.kind(),
-                IDENT | INT_NUMBER | LIFETIME_IDENT | T![self] | T![super] | T![crate] | T![Self]
-            )
-        });
         let mut result = StaticIndexedFile { file_id, inlay_hints, folds, tokens: vec![] };
 
         let mut add_token = |def: Definition, range: TextRange, scope_node: &SyntaxNode| {
             let id = if let Some(it) = self.def_map.get(&def) {
                 *it
             } else {
-                let it = salsa::attach(sema.db, || {
-                    self.tokens.insert(TokenStaticData {
-                        documentation: documentation_for_definition(&sema, def, scope_node),
-                        hover: Some(hover_for_definition(
-                            &sema,
-                            file_id,
-                            def,
-                            None,
-                            scope_node,
-                            None,
-                            false,
-                            &hover_config,
-                            edition,
-                            display_target,
-                        )),
-                        definition: def.try_to_nav(&sema).map(UpmappingResult::call_site).map(
-                            |it| FileRange { file_id: it.file_id, range: it.focus_or_full_range() },
-                        ),
-                        references: vec![],
-                        moniker: current_crate.and_then(|cc| def_to_moniker(self.db, def, cc)),
-                        display_name: def
-                            .name(self.db)
-                            .map(|name| name.display(self.db, edition).to_string()),
-                        signature: Some(def.label(self.db, display_target)),
-                        kind: def_to_kind(self.db, def),
-                    })
+                let it = self.tokens.insert(TokenStaticData {
+                    documentation: documentation_for_definition(&sema, def, scope_node),
+                    hover: Some(hover_for_definition(
+                        &sema,
+                        file_id,
+                        def,
+                        None,
+                        scope_node,
+                        None,
+                        false,
+                        &hover_config,
+                        edition,
+                        display_target,
+                    )),
+                    definition: def.try_to_nav(&sema).map(UpmappingResult::call_site).map(|it| {
+                        FileRange { file_id: it.file_id, range: it.focus_or_full_range() }
+                    }),
+                    definition_body: def
+                        .try_to_nav(&sema)
+                        .map(UpmappingResult::call_site)
+                        .map(|it| FileRange { file_id: it.file_id, range: it.full_range }),
+                    references: vec![],
+                    moniker: current_crate.and_then(|cc| def_to_moniker(self.db, def, cc)),
+                    display_name: def
+                        .name(self.db)
+                        .map(|name| name.display(self.db, edition).to_string()),
+                    signature: Some(def.label(self.db, display_target)),
+                    kind: def_to_kind(self.db, def),
                 });
                 self.def_map.insert(def, it);
                 it
@@ -278,10 +285,10 @@ impl StaticIndex<'_> {
         for token in tokens {
             let range = token.text_range();
             let node = token.parent().unwrap();
-            match salsa::attach(self.db, || get_definitions(&sema, token.clone())) {
-                Some(it) => {
-                    for i in it {
-                        add_token(i, range, &node);
+            match hir::attach_db(self.db, || get_definitions(&sema, token.clone())) {
+                Some(defs) => {
+                    for (def, _) in defs {
+                        add_token(def, range, &node);
                     }
                 }
                 None => continue,
@@ -295,37 +302,40 @@ impl StaticIndex<'_> {
         vendored_libs_config: VendoredLibrariesConfig<'_>,
     ) -> StaticIndex<'a> {
         let db = &analysis.db;
-        let work = all_modules(db).into_iter().filter(|module| {
-            let file_id = module.definition_source_file_id(db).original_file(db);
-            let source_root = db.file_source_root(file_id.file_id(&analysis.db)).source_root_id(db);
-            let source_root = db.source_root(source_root).source_root(db);
-            let is_vendored = match vendored_libs_config {
-                VendoredLibrariesConfig::Included { workspace_root } => source_root
-                    .path_for_file(&file_id.file_id(&analysis.db))
-                    .is_some_and(|module_path| module_path.starts_with(workspace_root)),
-                VendoredLibrariesConfig::Excluded => false,
-            };
+        hir::attach_db(db, || {
+            let work = all_modules(db).into_iter().filter(|module| {
+                let file_id = module.definition_source_file_id(db).original_file(db);
+                let source_root =
+                    db.file_source_root(file_id.file_id(&analysis.db)).source_root_id(db);
+                let source_root = db.source_root(source_root).source_root(db);
+                let is_vendored = match vendored_libs_config {
+                    VendoredLibrariesConfig::Included { workspace_root } => source_root
+                        .path_for_file(&file_id.file_id(&analysis.db))
+                        .is_some_and(|module_path| module_path.starts_with(workspace_root)),
+                    VendoredLibrariesConfig::Excluded => false,
+                };
 
-            !source_root.is_library || is_vendored
-        });
-        let mut this = StaticIndex {
-            files: vec![],
-            tokens: Default::default(),
-            analysis,
-            db,
-            def_map: Default::default(),
-        };
-        let mut visited_files = FxHashSet::default();
-        for module in work {
-            let file_id = module.definition_source_file_id(db).original_file(db);
-            if visited_files.contains(&file_id) {
-                continue;
+                !source_root.is_library || is_vendored
+            });
+            let mut this = StaticIndex {
+                files: vec![],
+                tokens: Default::default(),
+                analysis,
+                db,
+                def_map: Default::default(),
+            };
+            let mut visited_files = FxHashSet::default();
+            for module in work {
+                let file_id =
+                    module.definition_source_file_id(db).original_file(db).file_id(&analysis.db);
+                if visited_files.contains(&file_id) {
+                    continue;
+                }
+                this.add_file(file_id);
+                visited_files.insert(file_id);
             }
-            this.add_file(file_id.file_id(&analysis.db));
-            // mark the file
-            visited_files.insert(file_id);
-        }
-        this
+            this
+        })
     }
 }
 

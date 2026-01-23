@@ -56,18 +56,11 @@ This API is completely unstable and subject to change.
 */
 
 // tidy-alphabetical-start
-#![allow(internal_features)]
-#![allow(rustc::diagnostic_outside_of_impl)]
-#![allow(rustc::untranslatable_diagnostic)]
-#![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
-#![doc(rust_logo)]
 #![feature(assert_matches)]
-#![feature(debug_closure_helpers)]
 #![feature(gen_blocks)]
 #![feature(if_let_guard)]
 #![feature(iter_intersperse)]
 #![feature(never_type)]
-#![feature(rustdoc_internals)]
 #![feature(slice_partition_dedup)]
 #![feature(try_blocks)]
 #![feature(unwrap_infallible)]
@@ -91,19 +84,22 @@ mod variance;
 
 pub use errors::NoVariantNamed;
 use rustc_abi::{CVariadicStatus, ExternAbi};
+use rustc_hir::attrs::AttributeKind;
 use rustc_hir::def::DefKind;
 use rustc_hir::lints::DelayedLint;
-use rustc_hir::{self as hir};
-use rustc_middle::middle;
+use rustc_hir::{
+    find_attr, {self as hir},
+};
 use rustc_middle::mir::interpret::GlobalId;
 use rustc_middle::query::Providers;
-use rustc_middle::ty::{self, Const, Ty, TyCtxt};
+use rustc_middle::ty::{Const, Ty, TyCtxt};
+use rustc_middle::{middle, ty};
 use rustc_session::parse::feature_err;
 use rustc_span::{ErrorGuaranteed, Span};
 use rustc_trait_selection::traits;
 
 pub use crate::collect::suggest_impl_trait;
-use crate::hir_ty_lowering::{FeedConstTy, HirTyLowerer};
+use crate::hir_ty_lowering::HirTyLowerer;
 
 rustc_fluent_macro::fluent_messages! { "../messages.ftl" }
 
@@ -159,7 +155,19 @@ pub fn provide(providers: &mut Providers) {
 fn emit_delayed_lint(lint: &DelayedLint, tcx: TyCtxt<'_>) {
     match lint {
         DelayedLint::AttributeParsing(attribute_lint) => {
-            rustc_attr_parsing::emit_attribute_lint(attribute_lint, tcx)
+            tcx.node_span_lint(
+                attribute_lint.lint_id.lint,
+                attribute_lint.id,
+                attribute_lint.span,
+                |diag| {
+                    rustc_lint::decorate_attribute_lint(
+                        tcx.sess,
+                        Some(tcx),
+                        &attribute_lint.kind,
+                        diag,
+                    );
+                },
+            );
         }
     }
 }
@@ -227,7 +235,10 @@ pub fn check_crate(tcx: TyCtxt<'_>) {
                 tcx.ensure_ok().eval_static_initializer(item_def_id);
                 check::maybe_check_static_with_link_section(tcx, item_def_id);
             }
-            DefKind::Const if !tcx.generics_of(item_def_id).own_requires_monomorphization() => {
+            DefKind::Const
+                if !tcx.generics_of(item_def_id).own_requires_monomorphization()
+                    && !find_attr!(tcx.get_all_attrs(item_def_id), AttributeKind::TypeConst(_)) =>
+            {
                 // FIXME(generic_const_items): Passing empty instead of identity args is fishy but
                 //                             seems to be fine for now. Revisit this!
                 let instance = ty::Instance::new_raw(item_def_id.into(), ty::GenericArgs::empty());
@@ -288,8 +299,8 @@ pub fn lower_ty<'tcx>(tcx: TyCtxt<'tcx>, hir_ty: &hir::Ty<'tcx>) -> Ty<'tcx> {
 pub fn lower_const_arg_for_rustdoc<'tcx>(
     tcx: TyCtxt<'tcx>,
     hir_ct: &hir::ConstArg<'tcx>,
-    feed: FeedConstTy<'_, 'tcx>,
+    ty: Ty<'tcx>,
 ) -> Const<'tcx> {
     let env_def_id = tcx.hir_get_parent_item(hir_ct.hir_id);
-    collect::ItemCtxt::new(tcx, env_def_id.def_id).lowerer().lower_const_arg(hir_ct, feed)
+    collect::ItemCtxt::new(tcx, env_def_id.def_id).lowerer().lower_const_arg(hir_ct, ty)
 }

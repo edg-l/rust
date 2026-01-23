@@ -10,9 +10,10 @@ use rustc_data_structures::stable_hasher::StableHasher;
 use rustc_errors::{ColorConfig, LanguageIdentifier, TerminalUrl};
 use rustc_feature::UnstableFeatures;
 use rustc_hashes::Hash64;
-use rustc_macros::{Decodable, Encodable};
+use rustc_hir::attrs::CollapseMacroDebuginfo;
+use rustc_macros::{BlobDecodable, Encodable};
 use rustc_span::edition::Edition;
-use rustc_span::{RealFileName, SourceFileHashAlgorithm};
+use rustc_span::{RealFileName, RemapPathScopeComponents, SourceFileHashAlgorithm};
 use rustc_target::spec::{
     CodeModel, FramePointer, LinkerFlavorCli, MergeFunctions, OnBrokenPipe, PanicStrategy,
     RelocModel, RelroLevel, SanitizerSet, SplitDebuginfo, StackProtector, SymbolVisibility,
@@ -22,7 +23,7 @@ use rustc_target::spec::{
 use crate::config::*;
 use crate::search_paths::SearchPath;
 use crate::utils::NativeLib;
-use crate::{EarlyDiagCtxt, lint};
+use crate::{EarlyDiagCtxt, Session, lint};
 
 macro_rules! insert {
     ($opt_name:ident, $opt_expr:expr, $sub_hashes:expr) => {
@@ -75,7 +76,7 @@ pub struct ExtendedTargetModifierInfo {
 
 /// A recorded -Zopt_name=opt_value (or -Copt_name=opt_value)
 /// which alter the ABI or effectiveness of exploit mitigations.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Encodable, Decodable)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Encodable, BlobDecodable)]
 pub struct TargetModifier {
     /// Option enum value
     pub opt: OptionsTargetModifiers,
@@ -111,12 +112,12 @@ mod target_modifier_consistency_check {
         lparsed & tmod_sanitizers == rparsed & tmod_sanitizers
     }
     pub(super) fn sanitizer_cfi_normalize_integers(
-        opts: &Options,
+        sess: &Session,
         l: &TargetModifier,
         r: Option<&TargetModifier>,
     ) -> bool {
         // For kCFI, the helper flag -Zsanitizer-cfi-normalize-integers should also be a target modifier
-        if opts.unstable_opts.sanitizer.contains(SanitizerSet::KCFI) {
+        if sess.sanitizers().contains(SanitizerSet::KCFI) {
             if let Some(r) = r {
                 return l.extend().tech_value == r.extend().tech_value;
             } else {
@@ -133,7 +134,7 @@ impl TargetModifier {
     }
     // Custom consistency check for target modifiers (or default `l.tech_value == r.tech_value`)
     // When other is None, consistency with default value is checked
-    pub fn consistent(&self, opts: &Options, other: Option<&TargetModifier>) -> bool {
+    pub fn consistent(&self, sess: &Session, other: Option<&TargetModifier>) -> bool {
         assert!(other.is_none() || self.opt == other.unwrap().opt);
         match self.opt {
             OptionsTargetModifiers::UnstableOptions(unstable) => match unstable {
@@ -142,7 +143,7 @@ impl TargetModifier {
                 }
                 UnstableOptionsTargetModifiers::sanitizer_cfi_normalize_integers => {
                     return target_modifier_consistency_check::sanitizer_cfi_normalize_integers(
-                        opts, self, other,
+                        sess, self, other,
                     );
                 }
                 _ => {}
@@ -248,7 +249,7 @@ macro_rules! top_level_tmod_enum {
         ($user_value:ident){$($pout:tt)*};
     ) => {
         #[allow(non_camel_case_types)]
-        #[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Copy, Clone, Encodable, Decodable)]
+        #[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Copy, Clone, Encodable, BlobDecodable)]
         pub enum OptionsTargetModifiers {
             $($variant($substruct_enum)),*
         }
@@ -397,7 +398,6 @@ top_level_options!(
         /// can influence whether overflow checks are done or not.
         debug_assertions: bool [TRACKED],
         debuginfo: DebugInfo [TRACKED],
-        debuginfo_compression: DebugInfoCompression [TRACKED],
         lint_opts: Vec<(String, lint::Level)> [TRACKED_NO_CRATE_HASH],
         lint_cap: Option<lint::Level> [TRACKED_NO_CRATE_HASH],
         describe_lints: bool [UNTRACKED],
@@ -454,6 +454,8 @@ top_level_options!(
 
         /// Remap source path prefixes in all output (messages, object files, debug, etc.).
         remap_path_prefix: Vec<(PathBuf, PathBuf)> [TRACKED_NO_CRATE_HASH],
+        /// Defines which scopes of paths should be remapped by `--remap-path-prefix`.
+        remap_path_scope: RemapPathScopeComponents [TRACKED_NO_CRATE_HASH],
 
         /// Base directory containing the `library/` directory for the Rust standard library.
         /// Right now it's always `$sysroot/lib/rustlib/src/rust`
@@ -492,7 +494,9 @@ top_level_options!(
         pretty: Option<PpMode> [UNTRACKED],
 
         /// The (potentially remapped) working directory
+        #[rustc_lint_opt_deny_field_access("use `SourceMap::working_dir` instead of this field")]
         working_dir: RealFileName [TRACKED],
+
         color: ColorConfig [UNTRACKED],
 
         verbose: bool [TRACKED_NO_CRATE_HASH],
@@ -520,7 +524,7 @@ macro_rules! tmod_enum {
         ($user_value:ident){$($pout:tt)*};
     ) => {
         #[allow(non_camel_case_types)]
-        #[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Copy, Clone, Encodable, Decodable)]
+        #[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Copy, Clone, Encodable, BlobDecodable)]
         pub enum $tmod_enum_name {
             $($eout),*
         }
@@ -722,7 +726,6 @@ impl<O> OptionDesc<O> {
     }
 }
 
-#[allow(rustc::untranslatable_diagnostic)] // FIXME: make this translatable
 fn build_options<O: Default>(
     early_dcx: &EarlyDiagCtxt,
     matches: &getopts::Matches,
@@ -793,7 +796,8 @@ mod desc {
     pub(crate) const parse_list_with_polarity: &str =
         "a comma-separated list of strings, with elements beginning with + or -";
     pub(crate) const parse_autodiff: &str = "a comma separated list of settings: `Enable`, `PrintSteps`, `PrintTA`, `PrintTAFn`, `PrintAA`, `PrintPerf`, `PrintModBefore`, `PrintModAfter`, `PrintModFinal`, `PrintPasses`, `NoPostopt`, `LooseTypes`, `Inline`, `NoTT`";
-    pub(crate) const parse_offload: &str = "a comma separated list of settings: `Enable`";
+    pub(crate) const parse_offload: &str =
+        "a comma separated list of settings: `Host=<Absolute-Path>`, `Device`, `Test`";
     pub(crate) const parse_comma_list: &str = "a comma-separated list of strings";
     pub(crate) const parse_opt_comma_list: &str = parse_comma_list;
     pub(crate) const parse_number: &str = "a number";
@@ -806,9 +810,8 @@ mod desc {
     pub(crate) const parse_on_broken_pipe: &str = "either `kill`, `error`, or `inherit`";
     pub(crate) const parse_patchable_function_entry: &str = "either two comma separated integers (total_nops,prefix_nops), with prefix_nops <= total_nops, or one integer (total_nops)";
     pub(crate) const parse_opt_panic_strategy: &str = parse_panic_strategy;
-    pub(crate) const parse_oom_strategy: &str = "either `panic` or `abort`";
     pub(crate) const parse_relro_level: &str = "one of: `full`, `partial`, or `off`";
-    pub(crate) const parse_sanitizers: &str = "comma separated list of sanitizers: `address`, `cfi`, `dataflow`, `hwaddress`, `kcfi`, `kernel-address`, `leak`, `memory`, `memtag`, `safestack`, `shadow-call-stack`, or `thread`";
+    pub(crate) const parse_sanitizers: &str = "comma separated list of sanitizers: `address`, `cfi`, `dataflow`, `hwaddress`, `kcfi`, `kernel-address`, `leak`, `memory`, `memtag`, `safestack`, `shadow-call-stack`, `thread`, or 'realtime'";
     pub(crate) const parse_sanitizer_memory_track_origins: &str = "0, 1, or 2";
     pub(crate) const parse_cfguard: &str =
         "either a boolean (`yes`, `no`, `on`, `off`, etc), `checks`, or `nochecks`";
@@ -864,13 +867,13 @@ mod desc {
     pub(crate) const parse_linker_features: &str =
         "a list of enabled (`+` prefix) and disabled (`-` prefix) features: `lld`";
     pub(crate) const parse_polonius: &str = "either no value or `legacy` (the default), or `next`";
+    pub(crate) const parse_annotate_moves: &str =
+        "either a boolean (`yes`, `no`, `on`, `off`, etc.), or a size limit in bytes";
     pub(crate) const parse_stack_protector: &str =
         "one of (`none` (default), `basic`, `strong`, or `all`)";
     pub(crate) const parse_branch_protection: &str = "a `,` separated combination of `bti`, `gcs`, `pac-ret`, (optionally with `pc`, `b-key`, `leaf` if `pac-ret` is set)";
     pub(crate) const parse_proc_macro_execution_strategy: &str =
         "one of supported execution strategies (`same-thread`, or `cross-thread`)";
-    pub(crate) const parse_remap_path_scope: &str =
-        "comma separated list of scopes: `macro`, `diagnostics`, `debuginfo`, `object`, `all`";
     pub(crate) const parse_inlining_threshold: &str =
         "either a boolean (`yes`, `no`, `on`, `off`, etc), or a non-negative number";
     pub(crate) const parse_llvm_module_flag: &str = "<key>:<type>:<value>:<behavior>. Type must currently be `u32`. Behavior should be one of (`error`, `warning`, `require`, `override`, `append`, `appendunique`, `max`, `min`)";
@@ -948,6 +951,29 @@ pub mod parse {
             }
             _ => false,
         }
+    }
+
+    pub(crate) fn parse_annotate_moves(slot: &mut AnnotateMoves, v: Option<&str>) -> bool {
+        let mut bslot = false;
+        let mut nslot = 0u64;
+
+        *slot = match v {
+            // No value provided: -Z annotate-moves (enable with default limit)
+            None => AnnotateMoves::Enabled(None),
+            // Explicit boolean value provided: -Z annotate-moves=yes/no
+            s @ Some(_) if parse_bool(&mut bslot, s) => {
+                if bslot {
+                    AnnotateMoves::Enabled(None)
+                } else {
+                    AnnotateMoves::Disabled
+                }
+            }
+            // With numeric limit provided: -Z annotate-moves=1234
+            s @ Some(_) if parse_number(&mut nslot, s) => AnnotateMoves::Enabled(Some(nslot)),
+            _ => return false,
+        };
+
+        true
     }
 
     /// Use this for any string option that has a static default.
@@ -1218,15 +1244,6 @@ pub mod parse {
         false
     }
 
-    pub(crate) fn parse_oom_strategy(slot: &mut OomStrategy, v: Option<&str>) -> bool {
-        match v {
-            Some("panic") => *slot = OomStrategy::Panic,
-            Some("abort") => *slot = OomStrategy::Abort,
-            _ => return false,
-        }
-        true
-    }
-
     pub(crate) fn parse_relro_level(slot: &mut Option<RelroLevel>, v: Option<&str>) -> bool {
         match v {
             Some(s) => match s.parse::<RelroLevel>() {
@@ -1254,6 +1271,7 @@ pub mod parse {
                     "thread" => SanitizerSet::THREAD,
                     "hwaddress" => SanitizerSet::HWADDRESS,
                     "safestack" => SanitizerSet::SAFESTACK,
+                    "realtime" => SanitizerSet::REALTIME,
                     _ => return false,
                 }
             }
@@ -1434,8 +1452,34 @@ pub mod parse {
         let mut v: Vec<&str> = v.split(",").collect();
         v.sort_unstable();
         for &val in v.iter() {
-            let variant = match val {
-                "Enable" => Offload::Enable,
+            // Split each entry on '=' if it has an argument
+            let (key, arg) = match val.split_once('=') {
+                Some((k, a)) => (k, Some(a)),
+                None => (val, None),
+            };
+
+            let variant = match key {
+                "Host" => {
+                    if let Some(p) = arg {
+                        Offload::Host(p.to_string())
+                    } else {
+                        return false;
+                    }
+                }
+                "Device" => {
+                    if let Some(_) = arg {
+                        // Device does not accept a value
+                        return false;
+                    }
+                    Offload::Device
+                }
+                "Test" => {
+                    if let Some(_) = arg {
+                        // Test does not accept a value
+                        return false;
+                    }
+                    Offload::Test
+                }
                 _ => {
                     // FIXME(ZuseZ4): print an error saying which value is not recognized
                     return false;
@@ -1692,28 +1736,6 @@ pub mod parse {
             _ => return false,
         }
         true
-    }
-
-    pub(crate) fn parse_remap_path_scope(
-        slot: &mut RemapPathScopeComponents,
-        v: Option<&str>,
-    ) -> bool {
-        if let Some(v) = v {
-            *slot = RemapPathScopeComponents::empty();
-            for s in v.split(',') {
-                *slot |= match s {
-                    "macro" => RemapPathScopeComponents::MACRO,
-                    "diagnostics" => RemapPathScopeComponents::DIAGNOSTICS,
-                    "debuginfo" => RemapPathScopeComponents::DEBUGINFO,
-                    "object" => RemapPathScopeComponents::OBJECT,
-                    "all" => RemapPathScopeComponents::all(),
-                    _ => return false,
-                }
-            }
-            true
-        } else {
-            false
-        }
     }
 
     pub(crate) fn parse_relocation_model(slot: &mut Option<RelocModel>, v: Option<&str>) -> bool {
@@ -2081,6 +2103,7 @@ options! {
     #[rustc_lint_opt_deny_field_access("use `Session::must_emit_unwind_tables` instead of this field")]
     force_unwind_tables: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "force use of unwind tables"),
+    help: bool = (false, parse_no_value, [UNTRACKED], "Print codegen options"),
     incremental: Option<String> = (None, parse_opt_string, [UNTRACKED],
         "enable incremental compilation"),
     #[rustc_lint_opt_deny_field_access("documented to do nothing")]
@@ -2093,6 +2116,8 @@ options! {
         "instrument the generated code to support LLVM source-based code coverage reports \
         (note, the compiler build config must include `profiler = true`); \
         implies `-C symbol-mangling-version=v0`"),
+    jump_tables: bool = (true, parse_bool, [TRACKED],
+        "allow jump table and lookup table generation from switch case lowering (default: yes)"),
     link_arg: (/* redirected to link_args */) = ((), parse_string_push, [UNTRACKED],
         "a single extra argument to append to the linker invocation (can be used several times)"),
     link_args: Vec<String> = (Vec::new(), parse_list, [UNTRACKED],
@@ -2196,6 +2221,9 @@ options! {
         "only allow the listed language features to be enabled in code (comma separated)"),
     always_encode_mir: bool = (false, parse_bool, [TRACKED],
         "encode MIR of all functions into the crate metadata (default: no)"),
+    annotate_moves: AnnotateMoves = (AnnotateMoves::Disabled, parse_annotate_moves, [TRACKED],
+        "emit debug info for compiler-generated move and copy operations \
+        to make them visible in profilers. Can be a boolean or a size limit in bytes (default: disabled)"),
     assert_incr_state: Option<String> = (None, parse_opt_string, [UNTRACKED],
         "assert that the incremental cache is in given state: \
          either `loaded` or `not-loaded`."),
@@ -2228,6 +2256,8 @@ options! {
         "set options for branch target identification and pointer authentication on AArch64"),
     build_sdylib_interface: bool = (false, parse_bool, [UNTRACKED],
         "whether the stable interface is being built"),
+    cache_proc_macros: bool = (false, parse_bool, [TRACKED],
+        "cache the results of derive proc macro invocations (potentially unsound!) (default: no"),
     cf_protection: CFProtection = (CFProtection::None, parse_cfprotection, [TRACKED],
         "instrument control-flow architecture protection"),
     check_cfg_all_expected: bool = (false, parse_bool, [UNTRACKED],
@@ -2307,7 +2337,7 @@ options! {
         "emit a section containing stack size metadata (default: no)"),
     emit_thin_lto: bool = (true, parse_bool, [TRACKED],
         "emit the bc module with thin LTO info (default: yes)"),
-    emscripten_wasm_eh: bool = (false, parse_bool, [TRACKED],
+    emscripten_wasm_eh: bool = (true, parse_bool, [TRACKED],
         "Use WebAssembly error handling for wasm32-unknown-emscripten"),
     enforce_type_length_limit: bool = (false, parse_bool, [TRACKED],
         "enforce the type length limit when monomorphizing instances in codegen"),
@@ -2346,6 +2376,7 @@ options! {
         environment variable `RUSTC_GRAPHVIZ_FONT` (default: `Courier, monospace`)"),
     has_thread_local: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "explicitly enable the `cfg(target_thread_local)` directive"),
+    help: bool = (false, parse_no_value, [UNTRACKED], "Print unstable compiler options"),
     higher_ranked_assumptions: bool = (false, parse_bool, [TRACKED],
         "allow deducing higher-ranked outlives assumptions from coroutines when proving auto traits"),
     hint_mostly_unused: bool = (false, parse_bool, [TRACKED],
@@ -2475,8 +2506,6 @@ options! {
         "omit DWARF address ranges that give faster lookups"),
     no_implied_bounds_compat: bool = (false, parse_bool, [TRACKED],
         "disable the compatibility version of the `implied_bounds_ty` query"),
-    no_jump_tables: bool = (false, parse_no_value, [TRACKED],
-        "disable the jump tables and lookup tables that can be generated from a switch case lowering"),
     no_leak_check: bool = (false, parse_no_value, [UNTRACKED],
         "disable the 'leak check' for subtyping; unsound, but useful for tests"),
     no_link: bool = (false, parse_no_value, [TRACKED],
@@ -2500,8 +2529,6 @@ options! {
         Currently the only option available"),
     on_broken_pipe: OnBrokenPipe = (OnBrokenPipe::Default, parse_on_broken_pipe, [TRACKED],
         "behavior of std::io::ErrorKind::BrokenPipe (SIGPIPE)"),
-    oom: OomStrategy = (OomStrategy::Abort, parse_oom_strategy, [TRACKED],
-        "panic strategy for out-of-memory handling"),
     osx_rpath_install_name: bool = (false, parse_bool, [TRACKED],
         "pass `-install_name @rpath/...` to the macOS linker (default: no)"),
     packed_bundled_libs: bool = (false, parse_bool, [TRACKED],
@@ -2565,8 +2592,6 @@ options! {
         "whether ELF relocations can be relaxed"),
     remap_cwd_prefix: Option<PathBuf> = (None, parse_opt_pathbuf, [TRACKED],
         "remap paths under the current working directory to this path prefix"),
-    remap_path_scope: RemapPathScopeComponents = (RemapPathScopeComponents::all(), parse_remap_path_scope, [TRACKED],
-        "remap path scope (default: all)"),
     remark_dir: Option<PathBuf> = (None, parse_opt_pathbuf, [UNTRACKED],
         "directory into which to write optimization remarks (if not specified, they will be \
 written to standard error output)"),
@@ -2575,6 +2600,7 @@ written to standard error output)"),
     retpoline_external_thunk: bool = (false, parse_bool, [TRACKED TARGET_MODIFIER],
         "enables retpoline-external-thunk, retpoline-indirect-branches and retpoline-indirect-calls \
         target features (default: no)"),
+    #[rustc_lint_opt_deny_field_access("use `Session::sanitizers()` instead of this field")]
     sanitizer: SanitizerSet = (SanitizerSet::empty(), parse_sanitizers, [TRACKED TARGET_MODIFIER],
         "use a sanitizer"),
     sanitizer_cfi_canonical_jump_tables: Option<bool> = (Some(true), parse_opt_bool, [TRACKED],

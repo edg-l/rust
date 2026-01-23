@@ -11,7 +11,7 @@ use crate::inherent::*;
 use crate::ir_print::IrPrint;
 use crate::lang_items::{SolverAdtLangItem, SolverLangItem, SolverTraitLangItem};
 use crate::relate::Relate;
-use crate::solve::{CanonicalInput, ExternalConstraintsData, QueryResult, inspect};
+use crate::solve::{CanonicalInput, Certainty, ExternalConstraintsData, QueryResult, inspect};
 use crate::visit::{Flags, TypeVisitable};
 use crate::{self as ty, CanonicalParamEnvCacheEntry, search_graph};
 
@@ -53,6 +53,7 @@ pub trait Interner:
     type CoroutineId: SpecificDefId<Self>;
     type AdtId: SpecificDefId<Self>;
     type ImplId: SpecificDefId<Self>;
+    type UnevaluatedConstId: SpecificDefId<Self>;
     type Span: Span<Self>;
 
     type GenericArgs: GenericArgs<Self>;
@@ -152,7 +153,8 @@ pub trait Interner:
     type PlaceholderConst: PlaceholderConst<Self>;
     type ValueConst: ValueConst<Self>;
     type ExprConst: ExprConst<Self>;
-    type ValTree: Copy + Debug + Hash + Eq;
+    type ValTree: ValTree<Self>;
+    type ScalarInt: Copy + Debug + Hash + Eq;
 
     // Kinds of regions
     type Region: Region<Self>;
@@ -204,6 +206,7 @@ pub trait Interner:
     fn type_of(self, def_id: Self::DefId) -> ty::EarlyBinder<Self, Self::Ty>;
     fn type_of_opaque_hir_typeck(self, def_id: Self::LocalDefId)
     -> ty::EarlyBinder<Self, Self::Ty>;
+    fn const_of_item(self, def_id: Self::DefId) -> ty::EarlyBinder<Self, Self::Const>;
 
     type AdtDef: AdtDef<Self>;
     fn adt_def(self, adt_def_id: Self::AdtId) -> Self::AdtDef;
@@ -333,13 +336,18 @@ pub trait Interner:
 
     fn is_default_trait(self, def_id: Self::TraitId) -> bool;
 
+    fn is_sizedness_trait(self, def_id: Self::TraitId) -> bool;
+
     fn as_lang_item(self, def_id: Self::DefId) -> Option<SolverLangItem>;
 
     fn as_trait_lang_item(self, def_id: Self::TraitId) -> Option<SolverTraitLangItem>;
 
     fn as_adt_lang_item(self, def_id: Self::AdtId) -> Option<SolverAdtLangItem>;
 
-    fn associated_type_def_ids(self, def_id: Self::DefId) -> impl IntoIterator<Item = Self::DefId>;
+    fn associated_type_def_ids(
+        self,
+        def_id: Self::TraitId,
+    ) -> impl IntoIterator<Item = Self::DefId>;
 
     fn for_each_relevant_impl(
         self,
@@ -369,8 +377,6 @@ pub trait Interner:
     fn trait_is_dyn_compatible(self, trait_def_id: Self::TraitId) -> bool;
 
     fn trait_is_fundamental(self, def_id: Self::TraitId) -> bool;
-
-    fn trait_may_be_implemented_via_object(self, trait_def_id: Self::TraitId) -> bool;
 
     /// Returns `true` if this is an `unsafe trait`.
     fn trait_is_unsafe(self, trait_def_id: Self::TraitId) -> bool;
@@ -550,6 +556,7 @@ impl<T, R, E> CollectAndApply<T, R> for Result<T, E> {
 impl<I: Interner> search_graph::Cx for I {
     type Input = CanonicalInput<I>;
     type Result = QueryResult<I>;
+    type AmbiguityInfo = Certainty;
 
     type DepNodeIndex = I::DepNodeIndex;
     type Tracked<T: Debug + Clone> = I::Tracked<T>;

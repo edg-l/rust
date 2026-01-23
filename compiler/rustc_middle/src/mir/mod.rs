@@ -11,7 +11,7 @@ pub use basic_blocks::{BasicBlocks, SwitchTargetValue};
 use either::Either;
 use polonius_engine::Atom;
 use rustc_abi::{FieldIdx, VariantIdx};
-pub use rustc_ast::Mutability;
+pub use rustc_ast::{Mutability, Pinnedness};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_data_structures::graph::dominators::Dominators;
 use rustc_errors::{DiagArgName, DiagArgValue, DiagMessage, ErrorGuaranteed, IntoDiagArg};
@@ -51,6 +51,7 @@ mod statement;
 mod syntax;
 mod terminator;
 
+pub mod loops;
 pub mod traversal;
 pub mod visit;
 
@@ -619,6 +620,10 @@ impl<'tcx> Body<'tcx> {
                 let bits = eval_mono_const(constant)?;
                 return Some((bits, targets));
             }
+            Operand::RuntimeChecks(check) => {
+                let bits = check.value(tcx.sess) as u128;
+                return Some((bits, targets));
+            }
             Operand::Move(place) | Operand::Copy(place) => place,
         };
 
@@ -648,7 +653,6 @@ impl<'tcx> Body<'tcx> {
         }
 
         match rvalue {
-            Rvalue::NullaryOp(NullOp::UbChecks, _) => Some((tcx.sess.ub_checks() as u128, targets)),
             Rvalue::Use(Operand::Constant(constant)) => {
                 let bits = eval_mono_const(constant)?;
                 Some((bits, targets))
