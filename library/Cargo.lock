@@ -89,6 +89,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "edos_rt"
+version = "0.0.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dadf824d9b21e0798941f14c8acc034f2396084b7e754d260ea538cf7ca9cd25"
+dependencies = [
+ "rustc-std-workspace-alloc",
+ "rustc-std-workspace-core",
+]
+
+[[package]]
 name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -327,6 +337,7 @@ dependencies = [
  "cfg-if",
  "core",
  "dlmalloc",
+ "edos_rt",
  "fortanix-sgx-abi",
  "hashbrown",
  "hermit-abi",

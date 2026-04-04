@@ -47,6 +47,10 @@ cfg_select! {
         mod generic;
         pub use generic::*;
     }
+    target_os = "edos" => {
+        mod edos;
+        pub use edos::*;
+    }
 }
 
 pub type RawOsError = cfg_select! {
