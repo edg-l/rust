@@ -47,6 +47,15 @@ cfg_select! {
         mod windows;
         use windows as imp;
     }
+    target_os = "edos" => {
+        mod edos;
+        #[expect(dead_code)]
+        mod unsupported;
+        mod imp {
+            pub use super::edos::{getcwd, chdir};
+            pub use super::unsupported::{SplitPaths, split_paths, JoinPathsError, join_paths, current_exe, temp_dir, home_dir};
+        }
+    }
     _ => {
         mod unsupported;
         use unsupported as imp;

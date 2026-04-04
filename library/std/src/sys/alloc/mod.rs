@@ -136,4 +136,7 @@ cfg_select! {
     _ => {
         pub use imp::alloc_zeroed;
     }
+    target_os = "edos" => {
+        mod edos;
+    }
 }

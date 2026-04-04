@@ -11,6 +11,10 @@ cfg_select! {
         mod uefi;
         use uefi as imp;
     }
+    target_os = "edos" => {
+        mod edos;
+        use edos as imp;
+    }
     target_os = "motor" => {
         mod motor;
         use motor as imp;

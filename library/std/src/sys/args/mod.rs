@@ -10,6 +10,7 @@
     target_os = "uefi",
     target_os = "wasi",
     target_os = "xous",
+    target_os = "edos",
 ))]
 mod common;
 
@@ -17,6 +18,7 @@ cfg_select! {
     any(
         all(target_family = "unix", not(any(all(target_family = "wasm", target_os = "linux"), target_os = "espidf", target_os = "vita"))),
         target_os = "hermit",
+        target_os = "edos",
     ) => {
         mod unix;
         pub use unix::*;

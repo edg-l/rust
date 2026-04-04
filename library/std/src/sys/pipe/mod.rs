@@ -13,6 +13,10 @@ cfg_select! {
         mod motor;
         pub use motor::{Pipe, pipe};
     }
+    target_os = "edos" => {
+        mod edos;
+        pub use edos::{Pipe, pipe};
+    }
     _ => {
         mod unsupported;
         pub use unsupported::{Pipe, pipe};
