@@ -6,6 +6,7 @@ pub(crate) mod avr;
 pub(crate) mod bpf;
 pub(crate) mod cygwin;
 pub(crate) mod dragonfly;
+pub(crate) mod edos;
 pub(crate) mod freebsd;
 pub(crate) mod fuchsia;
 pub(crate) mod haiku;

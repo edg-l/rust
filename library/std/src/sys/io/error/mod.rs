@@ -1,4 +1,8 @@
 cfg_select! {
+    target_os = "edos" => {
+        mod edos;
+        pub use edos::*;
+    }
     target_os = "hermit" => {
         mod hermit;
         pub use hermit::*;

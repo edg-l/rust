@@ -11,6 +11,11 @@ cfg_select! {
         mod hermit;
         pub use hermit::*;
     }
+    target_os = "edos" => {
+        mod edos;
+        #[allow(unused)]
+        pub use edos::*;
+    }
     target_os = "motor" => {
         mod motor;
         pub use motor::*;
