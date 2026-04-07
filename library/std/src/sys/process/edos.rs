@@ -135,7 +135,7 @@ impl Command {
                 pipes[0] = Some(FileDesc {
                     inner: edos_rt::fd::FileDesc::from_raw_fd(
                         write_fd,
-                        edos_rt::fd::OpenFlags::Create,
+                        edos_rt::fd::OpenFlags::CREATE,
                     ),
                 });
 
@@ -155,7 +155,7 @@ impl Command {
                 pipes[1] = Some(FileDesc {
                     inner: edos_rt::fd::FileDesc::from_raw_fd(
                         read_fd,
-                        edos_rt::fd::OpenFlags::Create,
+                        edos_rt::fd::OpenFlags::CREATE,
                     ),
                 });
 
@@ -175,7 +175,7 @@ impl Command {
                 pipes[2] = Some(FileDesc {
                     inner: edos_rt::fd::FileDesc::from_raw_fd(
                         read_fd,
-                        edos_rt::fd::OpenFlags::Create,
+                        edos_rt::fd::OpenFlags::CREATE,
                     ),
                 });
 

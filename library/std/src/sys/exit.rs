@@ -154,6 +154,9 @@ pub fn exit(code: i32) -> ! {
         target_os = "xous" => {
             crate::os::xous::ffi::exit(code as u32)
         }
+        target_os = "edos" => {
+            edos_rt::process::sys_exit(code)
+        }
         _ => {
             let _ = code;
             crate::intrinsics::abort()

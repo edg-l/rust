@@ -20,6 +20,10 @@ mod is_terminal {
             mod motor;
             pub use motor::*;
         }
+        target_os = "edos" => {
+            mod edos;
+            pub use edos::*;
+        }
         _ => {
             mod unsupported;
             pub use unsupported::*;

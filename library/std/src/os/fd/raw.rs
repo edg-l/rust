@@ -7,14 +7,14 @@ use hermit_abi as libc;
 #[cfg(target_os = "motor")]
 use moto_rt::libc;
 
-#[cfg(target_os = "motor")]
+#[cfg(any(target_os = "motor", target_os = "edos"))]
 use super::owned::OwnedFd;
 #[cfg(not(target_os = "trusty"))]
 use crate::fs;
 use crate::io;
 #[cfg(target_os = "hermit")]
 use crate::os::hermit::io::OwnedFd;
-#[cfg(all(not(target_os = "hermit"), not(target_os = "motor")))]
+#[cfg(all(not(target_os = "hermit"), not(target_os = "motor"), not(target_os = "edos")))]
 use crate::os::raw;
 #[cfg(all(doc, not(any(target_arch = "wasm32", target_env = "sgx", target_os = "l4re"))))]
 use crate::os::unix::io::AsFd;
@@ -27,10 +27,10 @@ use crate::sys::{AsInner, FromInner, IntoInner};
 
 /// Raw file descriptors.
 #[stable(feature = "rust1", since = "1.0.0")]
-#[cfg(all(not(target_os = "hermit"), not(target_os = "motor")))]
+#[cfg(all(not(target_os = "hermit"), not(target_os = "motor"), not(target_os = "edos")))]
 pub type RawFd = raw::c_int;
 #[stable(feature = "rust1", since = "1.0.0")]
-#[cfg(any(target_os = "hermit", target_os = "motor"))]
+#[cfg(any(target_os = "hermit", target_os = "motor", target_os = "edos"))]
 pub type RawFd = i32;
 
 /// A trait to extract the raw file descriptor from an underlying object.
@@ -197,7 +197,10 @@ impl IntoRawFd for fs::File {
 impl AsRawFd for io::Stdin {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
-        libc::STDIN_FILENO
+        cfg_select! {
+            target_os = "edos" => { 0 }
+            _ => { libc::STDIN_FILENO }
+        }
     }
 }
 
@@ -205,7 +208,10 @@ impl AsRawFd for io::Stdin {
 impl AsRawFd for io::Stdout {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
-        libc::STDOUT_FILENO
+        cfg_select! {
+            target_os = "edos" => { 1 }
+            _ => { libc::STDOUT_FILENO }
+        }
     }
 }
 
@@ -213,7 +219,10 @@ impl AsRawFd for io::Stdout {
 impl AsRawFd for io::Stderr {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
-        libc::STDERR_FILENO
+        cfg_select! {
+            target_os = "edos" => { 2 }
+            _ => { libc::STDERR_FILENO }
+        }
     }
 }
 
@@ -222,7 +231,10 @@ impl AsRawFd for io::Stderr {
 impl<'a> AsRawFd for io::StdinLock<'a> {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
-        libc::STDIN_FILENO
+        cfg_select! {
+            target_os = "edos" => { 0 }
+            _ => { libc::STDIN_FILENO }
+        }
     }
 }
 
@@ -230,7 +242,10 @@ impl<'a> AsRawFd for io::StdinLock<'a> {
 impl<'a> AsRawFd for io::StdoutLock<'a> {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
-        libc::STDOUT_FILENO
+        cfg_select! {
+            target_os = "edos" => { 1 }
+            _ => { libc::STDOUT_FILENO }
+        }
     }
 }
 
@@ -238,7 +253,10 @@ impl<'a> AsRawFd for io::StdoutLock<'a> {
 impl<'a> AsRawFd for io::StderrLock<'a> {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
-        libc::STDERR_FILENO
+        cfg_select! {
+            target_os = "edos" => { 2 }
+            _ => { libc::STDERR_FILENO }
+        }
     }
 }
 

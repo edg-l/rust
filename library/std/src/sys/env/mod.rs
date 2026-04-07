@@ -4,6 +4,7 @@
 
 #[cfg(any(
     target_family = "unix",
+    target_os = "edos",
     target_os = "hermit",
     target_os = "motor",
     all(target_vendor = "fortanix", target_env = "sgx"),
@@ -50,6 +51,10 @@ cfg_select! {
     target_os = "xous" => {
         mod xous;
         pub use xous::*;
+    }
+    target_os = "edos" => {
+        mod edos;
+        pub use edos::*;
     }
     target_os = "zkvm" => {
         mod zkvm;

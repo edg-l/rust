@@ -5,6 +5,7 @@ use edos_rt::io::sys_read;
 use edos_rt::process::dup;
 
 use crate::io::{self, BorrowedCursor, IoSlice, IoSliceMut, Read, SeekFrom};
+use crate::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use crate::sys::{cvt, cvt_io, unsupported};
 
 #[allow(unused)]
@@ -62,12 +63,17 @@ impl FileDesc {
         false
     }
 
-    pub fn seek(&self, _pos: SeekFrom) -> io::Result<u64> {
-        unsupported()
+    pub fn seek(&self, pos: SeekFrom) -> io::Result<u64> {
+        let (offset, whence) = match pos {
+            SeekFrom::Start(n) => (n as i64, 0u32),
+            SeekFrom::Current(n) => (n, 1u32),
+            SeekFrom::End(n) => (n, 2u32),
+        };
+        cvt_io(self.inner.lseek(offset, whence))
     }
 
     pub fn tell(&self) -> io::Result<u64> {
-        unsupported()
+        self.seek(SeekFrom::Current(0))
     }
 
     pub fn duplicate(&self) -> io::Result<FileDesc> {
@@ -98,9 +104,63 @@ impl FileDesc {
         Ok(FileDesc {
             inner: edos_rt::fd::FileDesc::from_raw_fd(
                 dup(self.inner.raw_fd()),
-                edos_rt::fd::OpenFlags::Create,
+                edos_rt::fd::OpenFlags::CREATE,
             ),
         })
+    }
+
+}
+
+impl AsRawFd for FileDesc {
+    #[inline]
+    fn as_raw_fd(&self) -> RawFd {
+        self.inner.raw_fd() as RawFd
+    }
+}
+
+impl IntoRawFd for FileDesc {
+    #[inline]
+    fn into_raw_fd(self) -> RawFd {
+        self.inner.raw_fd() as RawFd
+    }
+}
+
+impl FromRawFd for FileDesc {
+    #[inline]
+    unsafe fn from_raw_fd(fd: RawFd) -> Self {
+        FileDesc {
+            inner: edos_rt::fd::FileDesc::from_raw_fd(fd as u64, edos_rt::fd::OpenFlags::NONE),
+        }
+    }
+}
+
+impl From<OwnedFd> for FileDesc {
+    fn from(owned: OwnedFd) -> Self {
+        unsafe { Self::from_raw_fd(owned.into_raw_fd()) }
+    }
+}
+
+impl From<FileDesc> for OwnedFd {
+    fn from(fd: FileDesc) -> Self {
+        unsafe { OwnedFd::from_raw_fd(fd.into_raw_fd()) }
+    }
+}
+
+impl crate::sys::IntoInner<OwnedFd> for FileDesc {
+    fn into_inner(self) -> OwnedFd {
+        unsafe { OwnedFd::from_raw_fd(self.into_raw_fd()) }
+    }
+}
+
+impl crate::sys::FromInner<OwnedFd> for FileDesc {
+    fn from_inner(owned_fd: OwnedFd) -> Self {
+        unsafe { Self::from_raw_fd(owned_fd.into_raw_fd()) }
+    }
+}
+
+impl FileDesc {
+    pub fn as_fd(&self) -> crate::os::fd::BorrowedFd<'_> {
+        unsafe { crate::os::fd::BorrowedFd::borrow_raw(self.as_raw_fd()) }
     }
 }
 

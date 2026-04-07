@@ -16,7 +16,8 @@ use crate::mem::ManuallyDrop;
     target_env = "sgx",
     target_os = "hermit",
     target_os = "trusty",
-    target_os = "motor"
+    target_os = "motor",
+    target_os = "edos"
 )))]
 use crate::sys::cvt;
 #[cfg(not(target_os = "trusty"))]
@@ -107,7 +108,8 @@ impl BorrowedFd<'_> {
         all(target_arch = "wasm32", not(target_os = "emscripten")),
         target_os = "hermit",
         target_os = "trusty",
-        target_os = "motor"
+        target_os = "motor",
+        target_os = "edos"
     )))]
     #[stable(feature = "io_safety", since = "1.63.0")]
     pub fn try_clone_to_owned(&self) -> io::Result<OwnedFd> {
@@ -148,6 +150,19 @@ impl BorrowedFd<'_> {
     pub fn try_clone_to_owned(&self) -> io::Result<OwnedFd> {
         let fd = moto_rt::fs::duplicate(self.as_raw_fd()).map_err(crate::sys::map_motor_error)?;
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+
+    /// Creates a new `OwnedFd` instance that shares the same underlying file
+    /// description as the existing `BorrowedFd` instance.
+    #[cfg(target_os = "edos")]
+    #[stable(feature = "io_safety", since = "1.63.0")]
+    pub fn try_clone_to_owned(&self) -> io::Result<OwnedFd> {
+        let new_fd = edos_rt::process::dup(self.as_raw_fd() as u64);
+        if new_fd == u64::MAX {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(unsafe { OwnedFd::from_raw_fd(new_fd as RawFd) })
+        }
     }
 }
 
@@ -200,28 +215,30 @@ impl FromRawFd for OwnedFd {
 impl Drop for OwnedFd {
     #[inline]
     fn drop(&mut self) {
+        // Note that errors are ignored when closing a file descriptor. According to POSIX 2024,
+        // we can and indeed should retry `close` on `EINTR`
+        // (https://pubs.opengroup.org/onlinepubs/9799919799/functions/close.html),
+        // but it is not clear yet how well widely-used implementations are conforming with this
+        // mandate since older versions of POSIX left the state of the FD after an `EINTR`
+        // unspecified. Ignoring errors is "fine" because some of the major Unices (in
+        // particular, Linux) do make sure to always close the FD, even when `close()` is
+        // interrupted, and the scenario is rare to begin with. If we retried on a
+        // not-POSIX-compliant implementation, the consequences could be really bad since we may
+        // close the wrong FD. Helpful link to an epic discussion by POSIX workgroup that led to
+        // the latest POSIX wording: http://austingroupbugs.net/view.php?id=529
+        #[cfg(not(any(target_os = "hermit", target_os = "edos")))]
         unsafe {
-            // Note that errors are ignored when closing a file descriptor. According to POSIX 2024,
-            // we can and indeed should retry `close` on `EINTR`
-            // (https://pubs.opengroup.org/onlinepubs/9799919799/functions/close.html),
-            // but it is not clear yet how well widely-used implementations are conforming with this
-            // mandate since older versions of POSIX left the state of the FD after an `EINTR`
-            // unspecified. Ignoring errors is "fine" because some of the major Unices (in
-            // particular, Linux) do make sure to always close the FD, even when `close()` is
-            // interrupted, and the scenario is rare to begin with. If we retried on a
-            // not-POSIX-compliant implementation, the consequences could be really bad since we may
-            // close the wrong FD. Helpful link to an epic discussion by POSIX workgroup that led to
-            // the latest POSIX wording: http://austingroupbugs.net/view.php?id=529
-            #[cfg(not(target_os = "hermit"))]
-            {
-                #[cfg(unix)]
-                crate::sys::fs::debug_assert_fd_is_open(self.fd.as_inner());
+            #[cfg(unix)]
+            crate::sys::fs::debug_assert_fd_is_open(self.fd.as_inner());
 
-                let _ = libc::close(self.fd.as_inner());
-            }
-            #[cfg(target_os = "hermit")]
+            let _ = libc::close(self.fd.as_inner());
+        }
+        #[cfg(target_os = "hermit")]
+        unsafe {
             let _ = hermit_abi::close(self.fd.as_inner());
         }
+        #[cfg(target_os = "edos")]
+        edos_rt::fd::sys_close(self.fd.as_inner() as u64);
     }
 }
 
@@ -345,7 +362,7 @@ impl From<OwnedFd> for fs::File {
 }
 
 #[stable(feature = "io_safety", since = "1.63.0")]
-#[cfg(not(target_os = "trusty"))]
+#[cfg(not(any(target_os = "trusty", target_os = "edos")))]
 impl AsFd for crate::net::TcpStream {
     #[inline]
     fn as_fd(&self) -> BorrowedFd<'_> {
@@ -354,7 +371,7 @@ impl AsFd for crate::net::TcpStream {
 }
 
 #[stable(feature = "io_safety", since = "1.63.0")]
-#[cfg(not(target_os = "trusty"))]
+#[cfg(not(any(target_os = "trusty", target_os = "edos")))]
 impl From<crate::net::TcpStream> for OwnedFd {
     /// Takes ownership of a [`TcpStream`](crate::net::TcpStream)'s socket file descriptor.
     #[inline]
@@ -364,7 +381,7 @@ impl From<crate::net::TcpStream> for OwnedFd {
 }
 
 #[stable(feature = "io_safety", since = "1.63.0")]
-#[cfg(not(target_os = "trusty"))]
+#[cfg(not(any(target_os = "trusty", target_os = "edos")))]
 impl From<OwnedFd> for crate::net::TcpStream {
     #[inline]
     fn from(owned_fd: OwnedFd) -> Self {
@@ -375,7 +392,7 @@ impl From<OwnedFd> for crate::net::TcpStream {
 }
 
 #[stable(feature = "io_safety", since = "1.63.0")]
-#[cfg(not(target_os = "trusty"))]
+#[cfg(not(any(target_os = "trusty", target_os = "edos")))]
 impl AsFd for crate::net::TcpListener {
     #[inline]
     fn as_fd(&self) -> BorrowedFd<'_> {
@@ -384,7 +401,7 @@ impl AsFd for crate::net::TcpListener {
 }
 
 #[stable(feature = "io_safety", since = "1.63.0")]
-#[cfg(not(target_os = "trusty"))]
+#[cfg(not(any(target_os = "trusty", target_os = "edos")))]
 impl From<crate::net::TcpListener> for OwnedFd {
     /// Takes ownership of a [`TcpListener`](crate::net::TcpListener)'s socket file descriptor.
     #[inline]
@@ -394,7 +411,7 @@ impl From<crate::net::TcpListener> for OwnedFd {
 }
 
 #[stable(feature = "io_safety", since = "1.63.0")]
-#[cfg(not(target_os = "trusty"))]
+#[cfg(not(any(target_os = "trusty", target_os = "edos")))]
 impl From<OwnedFd> for crate::net::TcpListener {
     #[inline]
     fn from(owned_fd: OwnedFd) -> Self {
@@ -405,7 +422,7 @@ impl From<OwnedFd> for crate::net::TcpListener {
 }
 
 #[stable(feature = "io_safety", since = "1.63.0")]
-#[cfg(not(target_os = "trusty"))]
+#[cfg(not(any(target_os = "trusty", target_os = "edos")))]
 impl AsFd for crate::net::UdpSocket {
     #[inline]
     fn as_fd(&self) -> BorrowedFd<'_> {
@@ -414,7 +431,7 @@ impl AsFd for crate::net::UdpSocket {
 }
 
 #[stable(feature = "io_safety", since = "1.63.0")]
-#[cfg(not(target_os = "trusty"))]
+#[cfg(not(any(target_os = "trusty", target_os = "edos")))]
 impl From<crate::net::UdpSocket> for OwnedFd {
     /// Takes ownership of a [`UdpSocket`](crate::net::UdpSocket)'s file descriptor.
     #[inline]
@@ -424,7 +441,7 @@ impl From<crate::net::UdpSocket> for OwnedFd {
 }
 
 #[stable(feature = "io_safety", since = "1.63.0")]
-#[cfg(not(target_os = "trusty"))]
+#[cfg(not(any(target_os = "trusty", target_os = "edos")))]
 impl From<OwnedFd> for crate::net::UdpSocket {
     #[inline]
     fn from(owned_fd: OwnedFd) -> Self {
