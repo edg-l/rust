@@ -6,8 +6,9 @@ unsafe extern "C" {
 
 #[unsafe(no_mangle)]
 #[allow(unused)]
-pub extern "C" fn _start(argc: isize, argv: *const *const u8) -> ! {
+pub extern "C" fn _start(argc: isize, argv: *const *const u8, envp: *const *const u8) -> ! {
     unsafe {
+        edos_rt::env::init_env(envp);
         crate::sys::args::init(argc, argv);
         let code = main(argc, argv);
 

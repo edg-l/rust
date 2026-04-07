@@ -12,6 +12,7 @@ use crate::fs::TryLockError;
 use crate::hash::{Hash, Hasher};
 use crate::io::{self, BorrowedCursor, Error, IoSlice, IoSliceMut, SeekFrom};
 use crate::path::{Path, PathBuf};
+use crate::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use crate::sys::fd::FileDesc;
 use crate::sys::time::SystemTime;
 use crate::sys::{cvt, cvt_io, unsupported};
@@ -137,17 +138,21 @@ impl DirEntry {
 
 impl OpenOptions {
     pub fn new() -> OpenOptions {
-        OpenOptions { inner: edos_rt::fd::OpenFlags::Create }
+        OpenOptions { inner: edos_rt::fd::OpenFlags::NONE }
     }
 
     pub fn read(&mut self, _read: bool) {}
     pub fn write(&mut self, _write: bool) {}
-    pub fn append(&mut self, _append: bool) {
-        self.inner = edos_rt::fd::OpenFlags::Append
+    pub fn append(&mut self, append: bool) {
+        if append {
+            self.inner |= edos_rt::fd::OpenFlags::APPEND;
+        }
     }
     pub fn truncate(&mut self, _truncate: bool) {}
-    pub fn create(&mut self, _create: bool) {
-        self.inner = edos_rt::fd::OpenFlags::Create
+    pub fn create(&mut self, create: bool) {
+        if create {
+            self.inner |= edos_rt::fd::OpenFlags::CREATE;
+        }
     }
     pub fn create_new(&mut self, _create_new: bool) {}
 }
@@ -195,8 +200,8 @@ impl File {
         unsupported()
     }
 
-    pub fn truncate(&self, _size: u64) -> io::Result<()> {
-        unsupported()
+    pub fn truncate(&self, size: u64) -> io::Result<()> {
+        cvt_io(self.0.inner.ftruncate(size))
     }
 
     #[inline]
@@ -246,11 +251,11 @@ impl File {
     }
 
     pub fn tell(&self) -> io::Result<u64> {
-        unsupported()
+        self.0.tell()
     }
 
     pub fn duplicate(&self) -> io::Result<File> {
-        unsupported()
+        Ok(File(self.0.try_clone()?))
     }
 
     pub fn set_permissions(&self, _perm: FilePermissions) -> io::Result<()> {
@@ -298,8 +303,11 @@ pub fn unlink(p: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub fn rename(_old: &Path, _new: &Path) -> io::Result<()> {
-    unsupported()
+pub fn rename(old: &Path, new: &Path) -> io::Result<()> {
+    cvt_io(edos_rt::fs::rename(
+        &old.to_string_lossy(),
+        &new.to_string_lossy(),
+    ))
 }
 
 pub fn set_perm(_p: &Path, perm: FilePermissions) -> io::Result<()> {
@@ -320,8 +328,11 @@ pub fn remove_dir_all(p: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub fn exists(_path: &Path) -> io::Result<bool> {
-    unsupported()
+pub fn exists(path: &Path) -> io::Result<bool> {
+    match stat(path) {
+        Ok(_) => Ok(true),
+        Err(_) => Ok(false),
+    }
 }
 
 pub fn readlink(_p: &Path) -> io::Result<PathBuf> {
@@ -341,16 +352,40 @@ pub fn stat(p: &Path) -> io::Result<FileAttr> {
     Ok(FileAttr(attr))
 }
 
-pub fn lstat(_p: &Path) -> io::Result<FileAttr> {
-    unsupported()
+pub fn lstat(p: &Path) -> io::Result<FileAttr> {
+    stat(p)
 }
 
-pub fn canonicalize(_p: &Path) -> io::Result<PathBuf> {
-    unsupported()
+pub fn canonicalize(p: &Path) -> io::Result<PathBuf> {
+    let s = p.to_string_lossy();
+    if s.starts_with('/') {
+        Ok(p.to_path_buf())
+    } else {
+        let cwd = cvt_io(edos_rt::fs::getcwd())?;
+        let mut full = PathBuf::from(cwd);
+        full.push(p);
+        Ok(full)
+    }
 }
 
-pub fn copy(_from: &Path, _to: &Path) -> io::Result<u64> {
-    unsupported()
+pub fn copy(from: &Path, to: &Path) -> io::Result<u64> {
+    let reader = File::open(from, &OpenOptions::new())?;
+    let writer = File::open(to, &{
+        let mut opts = OpenOptions::new();
+        opts.create(true);
+        opts
+    })?;
+    let mut buf = [0u8; 4096];
+    let mut total = 0u64;
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        writer.write(&buf[..n])?;
+        total += n as u64;
+    }
+    Ok(total)
 }
 
 pub fn set_times(_p: &Path, _times: FileTimes) -> io::Result<()> {
@@ -359,4 +394,49 @@ pub fn set_times(_p: &Path, _times: FileTimes) -> io::Result<()> {
 
 pub fn set_times_nofollow(_p: &Path, _times: FileTimes) -> io::Result<()> {
     unsupported()
+}
+
+impl AsRawFd for File {
+    #[inline]
+    fn as_raw_fd(&self) -> RawFd {
+        self.0.as_raw_fd()
+    }
+}
+
+impl IntoRawFd for File {
+    #[inline]
+    fn into_raw_fd(self) -> RawFd {
+        self.0.into_raw_fd()
+    }
+}
+
+impl FromRawFd for File {
+    #[inline]
+    unsafe fn from_raw_fd(fd: RawFd) -> Self {
+        File(unsafe { FileDesc::from_raw_fd(fd) })
+    }
+}
+
+impl crate::sys::AsInner<FileDesc> for File {
+    fn as_inner(&self) -> &FileDesc {
+        &self.0
+    }
+}
+
+impl crate::sys::IntoInner<FileDesc> for File {
+    fn into_inner(self) -> FileDesc {
+        self.0
+    }
+}
+
+impl crate::sys::FromInner<FileDesc> for File {
+    fn from_inner(fd: FileDesc) -> Self {
+        File(fd)
+    }
+}
+
+impl File {
+    pub fn as_fd(&self) -> crate::os::fd::BorrowedFd<'_> {
+        self.0.as_fd()
+    }
 }

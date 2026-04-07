@@ -16,10 +16,10 @@ pub fn anon_pipe() -> io::Result<(AnonPipe, AnonPipe)> {
     let (fd0, fd1) = edos_rt::process::pipe().unwrap();
     Ok((
         AnonPipe(FileDesc {
-            inner: edos_rt::fd::FileDesc::from_raw_fd(fd0, edos_rt::fd::OpenFlags::Create),
+            inner: edos_rt::fd::FileDesc::from_raw_fd(fd0, edos_rt::fd::OpenFlags::CREATE),
         }),
         AnonPipe(FileDesc {
-            inner: edos_rt::fd::FileDesc::from_raw_fd(fd1, edos_rt::fd::OpenFlags::Create),
+            inner: edos_rt::fd::FileDesc::from_raw_fd(fd1, edos_rt::fd::OpenFlags::CREATE),
         }),
     ))
 }

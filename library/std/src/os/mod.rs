@@ -192,6 +192,7 @@ pub mod xous;
     target_os = "trusty",
     target_os = "wasi",
     target_os = "motor",
+    target_os = "edos",
     doc
 ))]
 pub mod fd;

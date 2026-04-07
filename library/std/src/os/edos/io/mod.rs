@@ -6,6 +6,9 @@ use crate::sys::cvt_io;
 use crate::sys::AsInner;
 
 #[stable(feature = "rust1", since = "1.0.0")]
+pub use crate::os::fd::*;
+
+#[stable(feature = "rust1", since = "1.0.0")]
 pub trait FileExt {
     #[stable(feature = "rust1", since = "1.0.0")]
     fn ioctl(&self, request: u64, arg: u64, arg_len: usize, flags: u64) -> io::Result<u64>;
