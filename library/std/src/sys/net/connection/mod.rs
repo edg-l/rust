@@ -17,6 +17,10 @@ cfg_select! {
         mod wasip1;
         pub use wasip1::*;
     }
+    target_os = "edos" => {
+        mod edos;
+        pub use edos::*;
+    }
     target_os = "motor" => {
         mod motor;
         pub use motor::*;
@@ -37,7 +41,7 @@ cfg_select! {
 
 #[cfg_attr(
     // Make sure that this is used on some platforms at least.
-    not(any(target_os = "linux", target_os = "windows")),
+    not(any(target_os = "linux", target_os = "windows", target_os = "edos")),
     allow(dead_code)
 )]
 fn each_addr<A: crate::net::ToSocketAddrs, F, T>(addr: A, mut f: F) -> crate::io::Result<T>
