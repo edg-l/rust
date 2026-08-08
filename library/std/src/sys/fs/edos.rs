@@ -32,9 +32,16 @@ pub struct ReadDir {
 #[derive(Debug)]
 pub struct DirEntry(edos_rt::fs::DirEntry);
 
+/// Open flags the kernel decodes in `sys_open`. Spelled out here rather than
+/// taken from `edos_rt::fd::OpenFlags` because the published crate does not
+/// carry all of them.
+const O_TRUNC: u64 = 0x200;
+
 #[derive(Clone, Debug)]
 pub struct OpenOptions {
     inner: edos_rt::fd::OpenFlags,
+    read: bool,
+    write: bool,
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -138,23 +145,49 @@ impl DirEntry {
 
 impl OpenOptions {
     pub fn new() -> OpenOptions {
-        OpenOptions { inner: edos_rt::fd::OpenFlags::NONE }
+        OpenOptions { inner: edos_rt::fd::OpenFlags::NONE, read: false, write: false }
     }
 
-    pub fn read(&mut self, _read: bool) {}
-    pub fn write(&mut self, _write: bool) {}
+    pub fn read(&mut self, read: bool) {
+        self.read = read;
+    }
+    pub fn write(&mut self, write: bool) {
+        self.write = write;
+    }
     pub fn append(&mut self, append: bool) {
         if append {
+            // Appending implies writing, which matters because the access mode
+            // is what the kernel checks before permitting a shared writable
+            // mapping or a write syscall.
+            self.write = true;
             self.inner |= edos_rt::fd::OpenFlags::APPEND;
         }
     }
-    pub fn truncate(&mut self, _truncate: bool) {}
+    pub fn truncate(&mut self, truncate: bool) {
+        if truncate {
+            self.inner |= edos_rt::fd::OpenFlags(O_TRUNC);
+        }
+    }
     pub fn create(&mut self, create: bool) {
         if create {
             self.inner |= edos_rt::fd::OpenFlags::CREATE;
         }
     }
-    pub fn create_new(&mut self, _create_new: bool) {}
+    pub fn create_new(&mut self, create_new: bool) {
+        if create_new {
+            self.inner |= edos_rt::fd::OpenFlags::CREATE;
+        }
+    }
+
+    /// Access mode in the low two bits, as the kernel decodes it:
+    /// 0 = read-only, 1 = write-only, 2 = read-write.
+    fn access_flags(&self) -> edos_rt::fd::OpenFlags {
+        edos_rt::fd::OpenFlags(match (self.read, self.write) {
+            (true, true) => 2,
+            (false, true) => 1,
+            _ => 0,
+        })
+    }
 }
 
 impl File {
@@ -162,7 +195,7 @@ impl File {
         Ok(File(FileDesc {
             inner: cvt_io(edos_rt::fd::FileDesc::new(
                 &path.as_os_str().to_string_lossy(),
-                opts.inner,
+                opts.inner | opts.access_flags(),
             ))?,
         }))
     }
