@@ -1,4 +1,4 @@
-use edos_rt::io::{IoError, IoResult};
+use edos_rt::io::IoResult;
 use edos_rt::sys::{Errno, errno};
 
 use crate::io::{self as std_io, ErrorKind};
@@ -23,15 +23,33 @@ pub fn is_interrupted(_code: i32) -> bool {
     false
 }
 
-pub fn decode_error_kind(code: i32) -> crate::io::ErrorKind {
-    let errno: Errno = unsafe { core::mem::transmute(code as u64) };
+/// Maps a kernel error code onto an [`ErrorKind`].
+///
+/// The kernel's codes are what distinguishes a missing path from a full disk, so
+/// this is the single place that translation happens; `sys::io` decodes raw
+/// codes through it.
+pub fn error_kind(errno: Errno) -> ErrorKind {
     match errno {
-        edos_rt::sys::Errno::EACCES => ErrorKind::PermissionDenied,
-        edos_rt::sys::Errno::EEXIST => ErrorKind::AlreadyExists,
-        edos_rt::sys::Errno::EINVAL => ErrorKind::InvalidInput,
-        edos_rt::sys::Errno::ENOENT => ErrorKind::NotFound,
-        edos_rt::sys::Errno::EPERM => ErrorKind::PermissionDenied,
-        _ => ErrorKind::Uncategorized,
+        Errno::EACCES | Errno::EPERM => ErrorKind::PermissionDenied,
+        Errno::EEXIST => ErrorKind::AlreadyExists,
+        Errno::EINVAL => ErrorKind::InvalidInput,
+        Errno::ENOENT => ErrorKind::NotFound,
+        Errno::ENOTDIR => ErrorKind::NotADirectory,
+        Errno::EISDIR => ErrorKind::IsADirectory,
+        Errno::ENOSPC => ErrorKind::StorageFull,
+        Errno::EROFS => ErrorKind::ReadOnlyFilesystem,
+        Errno::EIO => ErrorKind::Other,
+        Errno::EINTR => ErrorKind::Interrupted,
+        Errno::EAGAIN => ErrorKind::WouldBlock,
+        Errno::ENOMEM => ErrorKind::OutOfMemory,
+        Errno::EBADF => ErrorKind::InvalidInput,
+        Errno::ENOEXEC => ErrorKind::InvalidData,
+        Errno::ENOTCONN => ErrorKind::NotConnected,
+        Errno::ECONNREFUSED => ErrorKind::ConnectionRefused,
+        Errno::EADDRINUSE => ErrorKind::AddrInUse,
+        Errno::EPIPE => ErrorKind::BrokenPipe,
+        Errno::EAFNOSUPPORT => ErrorKind::Unsupported,
+        Errno::EFAULT | Errno::Clear | Errno::UNKNOWN => ErrorKind::Uncategorized,
     }
 }
 
@@ -41,21 +59,11 @@ pub fn abort_internal() -> ! {
 
 pub fn cvt(t: isize) -> Result<isize, std_io::Error> {
     if t == -1 {
-        let err = errno();
-        return Err(decode_error_kind(err as u64 as i32).into());
+        return Err(error_kind(errno()).into());
     }
     Ok(t)
 }
 
 pub fn cvt_io<T>(result: IoResult<T>) -> crate::io::Result<T> {
-    match result {
-        Ok(x) => Ok(x),
-        Err(error) => Err(match error {
-            IoError::InvalidInput => ErrorKind::InvalidInput,
-            IoError::OutOfMemory => ErrorKind::OutOfMemory,
-            IoError::Interrupted => ErrorKind::Interrupted,
-            _ => ErrorKind::Uncategorized,
-        }
-        .into()),
-    }
+    result.map_err(|errno| error_kind(errno).into())
 }

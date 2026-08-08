@@ -10,7 +10,7 @@ use crate::path::Path;
 use crate::process::StdioPipes;
 use crate::sys::fd::FileDesc;
 use crate::sys::fs::File;
-use crate::sys::{cvt_io, decode_error_kind, unsupported};
+use crate::sys::{cvt_io, error_kind, unsupported};
 use crate::{fmt, io};
 
 pub type ChildPipe = crate::sys::pipe::Pipe;
@@ -380,7 +380,7 @@ impl Process {
                     edos_rt::process::WaitPidStatus::StillRunning => continue,
                     edos_rt::process::WaitPidStatus::Exited(code) => return Ok(ExitStatus(code)),
                 },
-                Err(err) => return Err(decode_error_kind(err as i32).into()),
+                Err(err) => return Err(error_kind(err).into()),
             }
         }
     }
@@ -393,7 +393,7 @@ impl Process {
                 edos_rt::process::WaitPidStatus::StillRunning => Ok(None),
                 edos_rt::process::WaitPidStatus::Exited(code) => return Ok(Some(ExitStatus(code))),
             },
-            Err(err) => return Err(decode_error_kind(err as i32).into()),
+            Err(err) => return Err(error_kind(err).into()),
         }
     }
 }
