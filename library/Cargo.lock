@@ -90,9 +90,9 @@ dependencies = [
 
 [[package]]
 name = "edos_rt"
-version = "0.0.38"
+version = "0.0.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a225822a55818090dde011b6f5486924756912d843cfaeb8a52536e778f6bcf"
+checksum = "856c9217230b86b8268ea0dfc5004dfa173a468551585b0ffe5fa357c0485c98"
 dependencies = [
  "rustc-std-workspace-alloc",
  "rustc-std-workspace-core",
