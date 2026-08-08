@@ -2,7 +2,7 @@ use edos_rt::process::thread_create;
 
 use crate::io;
 use crate::num::NonZero;
-use crate::sys::decode_error_kind;
+use crate::sys::error_kind;
 use crate::thread::ThreadInit;
 use crate::time::Duration;
 
@@ -20,7 +20,7 @@ impl Thread {
 
         let pid: io::Result<u64> = match thread_create(thread_start, p.cast()) {
             Ok(pid) => Ok(pid),
-            Err(err) => Err(decode_error_kind(err as i32).into()),
+            Err(err) => Err(error_kind(err).into()),
         };
 
         Ok(Thread(pid?))

@@ -32,11 +32,6 @@ pub struct ReadDir {
 #[derive(Debug)]
 pub struct DirEntry(edos_rt::fs::DirEntry);
 
-/// Open flags the kernel decodes in `sys_open`. Spelled out here rather than
-/// taken from `edos_rt::fd::OpenFlags` because the published crate does not
-/// carry all of them.
-const O_TRUNC: u64 = 0x200;
-
 #[derive(Clone, Debug)]
 pub struct OpenOptions {
     inner: edos_rt::fd::OpenFlags,
@@ -165,7 +160,7 @@ impl OpenOptions {
     }
     pub fn truncate(&mut self, truncate: bool) {
         if truncate {
-            self.inner |= edos_rt::fd::OpenFlags(O_TRUNC);
+            self.inner |= edos_rt::fd::OpenFlags::TRUNCATE;
         }
     }
     pub fn create(&mut self, create: bool) {
@@ -179,14 +174,13 @@ impl OpenOptions {
         }
     }
 
-    /// Access mode in the low two bits, as the kernel decodes it:
-    /// 0 = read-only, 1 = write-only, 2 = read-write.
     fn access_flags(&self) -> edos_rt::fd::OpenFlags {
-        edos_rt::fd::OpenFlags(match (self.read, self.write) {
-            (true, true) => 2,
-            (false, true) => 1,
-            _ => 0,
-        })
+        use edos_rt::fd::OpenFlags;
+        match (self.read, self.write) {
+            (true, true) => OpenFlags::READ_WRITE,
+            (false, true) => OpenFlags::WRITE_ONLY,
+            _ => OpenFlags::READ_ONLY,
+        }
     }
 }
 
