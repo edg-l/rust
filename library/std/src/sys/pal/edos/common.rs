@@ -49,6 +49,8 @@ pub fn error_kind(errno: Errno) -> ErrorKind {
         Errno::EADDRINUSE => ErrorKind::AddrInUse,
         Errno::EPIPE => ErrorKind::BrokenPipe,
         Errno::EAFNOSUPPORT => ErrorKind::Unsupported,
+        Errno::ESPIPE => ErrorKind::NotSeekable,
+        Errno::EBUSY => ErrorKind::ResourceBusy,
         Errno::EFAULT | Errno::Clear | Errno::UNKNOWN => ErrorKind::Uncategorized,
     }
 }
