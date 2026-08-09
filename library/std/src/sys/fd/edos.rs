@@ -100,6 +100,10 @@ impl FileDesc {
         cvt_io(self.inner.fstat())
     }
 
+    pub fn fsync(&self) -> io::Result<()> {
+        cvt_io(self.inner.fsync())
+    }
+
     pub fn try_clone(&self) -> io::Result<Self> {
         Ok(FileDesc {
             inner: edos_rt::fd::FileDesc::from_raw_fd(

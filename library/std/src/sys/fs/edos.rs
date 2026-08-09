@@ -205,11 +205,13 @@ impl File {
     }
 
     pub fn fsync(&self) -> io::Result<()> {
-        Ok(())
+        self.0.fsync()
     }
 
+    /// The kernel has no `fdatasync`: `SYS_FSYNC` already flushes data and
+    /// metadata together, so this is `fsync` rather than a weaker guarantee.
     pub fn datasync(&self) -> io::Result<()> {
-        Ok(())
+        self.0.fsync()
     }
 
     pub fn lock(&self) -> io::Result<()> {
