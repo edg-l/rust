@@ -30,7 +30,12 @@ pub struct ReadDir {
 }
 
 #[derive(Debug)]
-pub struct DirEntry(edos_rt::fs::DirEntry);
+pub struct DirEntry {
+    inner: edos_rt::fs::DirEntry,
+    /// Directory this entry was read from. `path()` is documented to return a
+    /// path usable on its own, so the entry has to remember where it came from.
+    root: PathBuf,
+}
 
 #[derive(Clone, Debug)]
 pub struct OpenOptions {
@@ -122,19 +127,19 @@ impl Iterator for ReadDir {
 
 impl DirEntry {
     pub fn path(&self) -> PathBuf {
-        self.0.name.clone().into()
+        self.root.join(&self.inner.name)
     }
 
     pub fn file_name(&self) -> OsString {
-        self.0.name.clone().into()
+        self.inner.name.clone().into()
     }
 
     pub fn metadata(&self) -> io::Result<FileAttr> {
-        unsupported()
+        stat(&self.path())
     }
 
     pub fn file_type(&self) -> io::Result<FileType> {
-        Ok(FileType(self.0.file_type))
+        Ok(FileType(self.inner.file_type))
     }
 }
 
@@ -319,7 +324,7 @@ impl fmt::Debug for File {
 pub fn readdir(p: &Path) -> io::Result<ReadDir> {
     let mut dirs: Vec<_> = cvt_io(edos_rt::fs::list_dir(&p.to_string_lossy()))?
         .into_iter()
-        .map(|d| DirEntry(d))
+        .map(|d| DirEntry { inner: d, root: p.to_path_buf() })
         .collect();
     dirs.reverse();
     Ok(ReadDir { dirs })
