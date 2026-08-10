@@ -12,10 +12,7 @@ pub const DEFAULT_MIN_STACK_SIZE: usize = 64 * 1024;
 
 impl Thread {
     // unsafe: see thread::Builder::spawn_unchecked for safety requirements
-    pub unsafe fn new(
-        _stack: usize,
-        init: Box<ThreadInit>,
-    ) -> io::Result<Thread> {
+    pub unsafe fn new(_stack: usize, init: Box<ThreadInit>) -> io::Result<Thread> {
         let p = Box::into_raw(init);
 
         let pid: io::Result<u64> = match thread_create(thread_start, p.cast()) {
@@ -59,10 +56,8 @@ pub fn yield_now() {
 }
 
 pub fn sleep(dur: Duration) {
-    let mut ms = dur.as_millis();
-
-    if ms > u64::MAX as u128 {
-        ms = u64::MAX as u128;
-    }
-    edos_rt::process::sleep_ms(ms as u64).ok();
+    // Nanoseconds, not milliseconds: rounding the request meant every sleep
+    // shorter than a millisecond was either skipped or stretched to one.
+    let secs = dur.as_secs().min(i64::MAX as u64) as i64;
+    edos_rt::process::nanosleep(secs, dur.subsec_nanos() as i64).ok();
 }

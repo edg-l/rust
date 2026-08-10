@@ -1,6 +1,6 @@
 #![unstable(reason = "not public", issue = "none", feature = "fd")]
 
-use edos_rt::fd::FstatEntry;
+use edos_rt::fd::{FstatEntry, IoVec};
 use edos_rt::io::sys_read;
 use edos_rt::process::dup;
 
@@ -11,6 +11,15 @@ use crate::sys::{cvt, cvt_io, unsupported};
 #[allow(unused)]
 const fn max_iov() -> usize {
     16
+}
+
+/// Describe the caller's buffers to the kernel.
+///
+/// Capped at [`max_iov`]: a vectored call is allowed to be short, and a caller
+/// that has more buffers than the kernel takes at once gets the rest on its
+/// next call.
+fn iovecs<'a>(bufs: impl Iterator<Item = (*const u8, usize)>) -> Vec<IoVec> {
+    bufs.take(max_iov()).map(|(base, len)| IoVec { base: base as u64, len: len as u64 }).collect()
 }
 
 #[derive(Debug)]
@@ -35,13 +44,14 @@ impl FileDesc {
         Ok(())
     }
 
-    pub fn read_vectored(&self, _bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
-        unsupported()
+    pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        let iovs = iovecs(bufs.iter().map(|b| (b.as_ptr(), b.len())));
+        cvt_io(self.inner.readv(&iovs))
     }
 
     #[inline]
     pub fn is_read_vectored(&self) -> bool {
-        false
+        true
     }
 
     pub fn read_to_end(&self, buf: &mut Vec<u8>) -> io::Result<usize> {
@@ -54,13 +64,14 @@ impl FileDesc {
         Ok(result as usize)
     }
 
-    pub fn write_vectored(&self, _bufs: &[IoSlice<'_>]) -> io::Result<usize> {
-        unsupported()
+    pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        let iovs = iovecs(bufs.iter().map(|b| (b.as_ptr(), b.len())));
+        cvt_io(self.inner.writev(&iovs))
     }
 
     #[inline]
     pub fn is_write_vectored(&self) -> bool {
-        false
+        true
     }
 
     pub fn seek(&self, pos: SeekFrom) -> io::Result<u64> {
@@ -112,7 +123,6 @@ impl FileDesc {
             ),
         })
     }
-
 }
 
 impl AsRawFd for FileDesc {

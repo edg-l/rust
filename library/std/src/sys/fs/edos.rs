@@ -11,22 +11,51 @@ use crate::fmt;
 use crate::fs::TryLockError;
 use crate::hash::{Hash, Hasher};
 use crate::io::{self, BorrowedCursor, Error, IoSlice, IoSliceMut, SeekFrom};
-use crate::path::{Path, PathBuf};
 use crate::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
+use crate::path::{Path, PathBuf};
 use crate::sys::fd::FileDesc;
-use crate::sys::time::SystemTime;
+use crate::sys::time::{SystemTime, UNIX_EPOCH};
 use crate::sys::{cvt, cvt_io, unsupported};
+use crate::time::Duration;
 
 pub use crate::sys::fs::common::Dir;
 
 pub struct File(pub(crate) FileDesc);
 
+/// A `stat` timestamp, given as whole seconds since the Unix epoch.
+///
+/// Zero means the filesystem carries no such time. Returning the epoch for it
+/// would date every file on such a volume to 1970, which is a wrong answer
+/// rather than a missing one.
+fn timestamp(secs: u64) -> io::Result<SystemTime> {
+    if secs == 0 {
+        return Err(io::const_error!(
+            io::ErrorKind::Unsupported,
+            "this filesystem does not record that timestamp",
+        ));
+    }
+    UNIX_EPOCH
+        .checked_add_duration(&Duration::from_secs(secs))
+        .ok_or_else(|| io::const_error!(io::ErrorKind::InvalidData, "timestamp out of range"))
+}
+
 #[derive(Debug, Clone)]
 pub struct FileAttr(FstatEntry);
 
+/// A directory walked in chunks.
+///
+/// `SYS_LIST_DIR` needs a buffer big enough for the whole directory at once, so
+/// a large one either allocates for every entry up front or fails; `getdents`
+/// takes a starting index, which is what lets this hold one chunk at a time.
 #[derive(Debug)]
 pub struct ReadDir {
-    dirs: Vec<DirEntry>,
+    root: PathBuf,
+    /// Decoded but not yet yielded, reversed so `pop` hands them out in order.
+    batch: Vec<edos_rt::fs::DirEntry>,
+    /// Entries already yielded, which is where the next chunk starts.
+    consumed: usize,
+    /// Set by the chunk that came back short, so the end costs no extra call.
+    exhausted: bool,
 }
 
 #[derive(Debug)]
@@ -44,8 +73,16 @@ pub struct OpenOptions {
     write: bool,
 }
 
+/// Times to write, `None` meaning "leave this one alone".
+///
+/// The kernel stores whole seconds, so a `SystemTime` is truncated on the way
+/// down; that is a property of the on-disk format rather than of this type,
+/// which keeps what it was given.
 #[derive(Copy, Clone, Debug, Default)]
-pub struct FileTimes {}
+pub struct FileTimes {
+    accessed: Option<SystemTime>,
+    modified: Option<SystemTime>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FilePermissions(u16);
@@ -70,15 +107,15 @@ impl FileAttr {
     }
 
     pub fn modified(&self) -> io::Result<SystemTime> {
-        unsupported()
+        timestamp(self.0.modified)
     }
 
     pub fn accessed(&self) -> io::Result<SystemTime> {
-        unsupported()
+        timestamp(self.0.accessed)
     }
 
     pub fn created(&self) -> io::Result<SystemTime> {
-        unsupported()
+        timestamp(self.0.created)
     }
 }
 
@@ -93,8 +130,35 @@ impl FilePermissions {
 impl Eq for FilePermissions {}
 
 impl FileTimes {
-    pub fn set_accessed(&mut self, _t: SystemTime) {}
-    pub fn set_modified(&mut self, _t: SystemTime) {}
+    pub fn set_accessed(&mut self, t: SystemTime) {
+        self.accessed = Some(t);
+    }
+    pub fn set_modified(&mut self, t: SystemTime) {
+        self.modified = Some(t);
+    }
+
+    /// The pair the kernel expects, with `UTIME_OMIT` standing in for a time
+    /// the caller did not set.
+    fn pair(&self) -> io::Result<(edos_rt::fs::Timespec, edos_rt::fs::Timespec)> {
+        let one = |t: Option<SystemTime>| -> io::Result<edos_rt::fs::Timespec> {
+            match t {
+                None => Ok(edos_rt::fs::Timespec::OMIT),
+                Some(t) => {
+                    let secs = t
+                        .sub_time(&UNIX_EPOCH)
+                        .map_err(|_| {
+                            io::const_error!(
+                                io::ErrorKind::InvalidInput,
+                                "file times before the Unix epoch cannot be stored"
+                            )
+                        })?
+                        .as_secs();
+                    Ok(edos_rt::fs::Timespec { tv_sec: secs as i64, tv_nsec: 0 })
+                }
+            }
+        };
+        Ok((one(self.accessed)?, one(self.modified)?))
+    }
 }
 
 impl FileType {
@@ -107,7 +171,7 @@ impl FileType {
     }
 
     pub fn is_symlink(&self) -> bool {
-        false
+        matches!(self.0, edos_rt::fs::FileType::Symlink)
     }
 }
 
@@ -117,11 +181,39 @@ impl Hash for FileType {
     }
 }
 
+impl ReadDir {
+    fn new(root: PathBuf, first: Vec<edos_rt::fs::DirEntry>) -> ReadDir {
+        let mut dir = ReadDir { root, batch: Vec::new(), consumed: 0, exhausted: false };
+        dir.fill(first);
+        dir
+    }
+
+    fn fill(&mut self, mut entries: Vec<edos_rt::fs::DirEntry>) {
+        self.exhausted = entries.is_empty();
+        entries.reverse();
+        self.batch = entries;
+    }
+}
+
 impl Iterator for ReadDir {
     type Item = io::Result<DirEntry>;
 
     fn next(&mut self) -> Option<io::Result<DirEntry>> {
-        self.dirs.pop().map(Ok)
+        if self.batch.is_empty() {
+            if self.exhausted {
+                return None;
+            }
+            match edos_rt::fs::read_dir_from(&self.root.to_string_lossy(), self.consumed) {
+                Ok(entries) => self.fill(entries),
+                Err(e) => return Some(Err(io::Error::from_raw_os_error(e as i32))),
+            }
+            if self.batch.is_empty() {
+                return None;
+            }
+        }
+        let inner = self.batch.pop()?;
+        self.consumed += 1;
+        Some(Ok(DirEntry { inner, root: self.root.clone() }))
     }
 }
 
@@ -296,8 +388,9 @@ impl File {
         unsupported()
     }
 
-    pub fn set_times(&self, _times: FileTimes) -> io::Result<()> {
-        unsupported()
+    pub fn set_times(&self, times: FileTimes) -> io::Result<()> {
+        let (accessed, modified) = times.pair()?;
+        cvt_io(edos_rt::fs::set_fd_times(self.0.as_raw_fd() as u64, accessed, modified))
     }
 
     pub fn from_raw_fd(fd: u64, flags: OpenFlags) -> Self {
@@ -324,12 +417,11 @@ impl fmt::Debug for File {
 }
 
 pub fn readdir(p: &Path) -> io::Result<ReadDir> {
-    let mut dirs: Vec<_> = cvt_io(edos_rt::fs::list_dir(&p.to_string_lossy()))?
-        .into_iter()
-        .map(|d| DirEntry { inner: d, root: p.to_path_buf() })
-        .collect();
-    dirs.reverse();
-    Ok(ReadDir { dirs })
+    // The first chunk is read here rather than on the first `next()`: a missing
+    // or unreadable directory is `read_dir`'s error to report, and an iterator
+    // that only fails once it is walked reports it to nobody.
+    let first = cvt_io(edos_rt::fs::read_dir_from(&p.to_string_lossy(), 0))?;
+    Ok(ReadDir::new(p.to_path_buf(), first))
 }
 
 pub fn unlink(p: &Path) -> io::Result<()> {
@@ -338,10 +430,7 @@ pub fn unlink(p: &Path) -> io::Result<()> {
 }
 
 pub fn rename(old: &Path, new: &Path) -> io::Result<()> {
-    cvt_io(edos_rt::fs::rename(
-        &old.to_string_lossy(),
-        &new.to_string_lossy(),
-    ))
+    cvt_io(edos_rt::fs::rename(&old.to_string_lossy(), &new.to_string_lossy()))
 }
 
 pub fn set_perm(_p: &Path, perm: FilePermissions) -> io::Result<()> {
@@ -363,18 +452,18 @@ pub fn remove_dir_all(p: &Path) -> io::Result<()> {
 }
 
 pub fn exists(path: &Path) -> io::Result<bool> {
-    match stat(path) {
-        Ok(_) => Ok(true),
-        Err(_) => Ok(false),
-    }
+    // `access` with `F_OK`, which asks the question directly rather than
+    // building a whole `stat` and throwing it away.
+    Ok(edos_rt::fs::access(&path.to_string_lossy(), edos_rt::sys::F_OK))
 }
 
-pub fn readlink(_p: &Path) -> io::Result<PathBuf> {
-    unsupported()
+pub fn readlink(p: &Path) -> io::Result<PathBuf> {
+    let target = cvt_io(edos_rt::fs::read_link(&p.to_string_lossy()))?;
+    Ok(PathBuf::from(target))
 }
 
-pub fn symlink(_original: &Path, _link: &Path) -> io::Result<()> {
-    unsupported()
+pub fn symlink(original: &Path, link: &Path) -> io::Result<()> {
+    cvt_io(edos_rt::fs::symlink(&original.to_string_lossy(), &link.to_string_lossy()))
 }
 
 pub fn link(_src: &Path, _dst: &Path) -> io::Result<()> {
@@ -422,8 +511,9 @@ pub fn copy(from: &Path, to: &Path) -> io::Result<u64> {
     Ok(total)
 }
 
-pub fn set_times(_p: &Path, _times: FileTimes) -> io::Result<()> {
-    unsupported()
+pub fn set_times(p: &Path, times: FileTimes) -> io::Result<()> {
+    let (accessed, modified) = times.pair()?;
+    cvt_io(edos_rt::fs::set_times(&p.to_string_lossy(), accessed, modified))
 }
 
 pub fn set_times_nofollow(_p: &Path, _times: FileTimes) -> io::Result<()> {
