@@ -398,17 +398,22 @@ pub struct ExitStatus(i32);
 
 impl ExitStatus {
     pub fn exit_ok(&self) -> Result<(), ExitStatusError> {
-        Ok(())
+        match self.0 {
+            0 => Ok(()),
+            code => Err(ExitStatusError(code)),
+        }
     }
 
     pub fn code(&self) -> Option<i32> {
-        Some(0)
+        Some(self.0)
     }
 }
 
 impl fmt::Display for ExitStatus {
+    /// A process killed by a signal exits with `128 + signum`, the shell's
+    /// convention, since `waitpid` reports one status and not a cause.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<dummy exit status>")
+        write!(f, "exit status: {}", self.0)
     }
 }
 
