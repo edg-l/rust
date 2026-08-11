@@ -145,6 +145,12 @@ impl Command {
 
         let mut pipes = [const { None }; 3];
         let mut null_files = Vec::new();
+        // The ends the child takes over. Spawn clones the parent's
+        // descriptor into the child rather than moving it, so a pipe whose
+        // write end the parent still holds never reaches zero writers and
+        // never reports end of file: a read of the child's output would
+        // block after the child had exited.
+        let mut child_ends = Vec::new();
 
         let stdin = match self.stdin.as_ref().unwrap_or(&default) {
             Stdio::Inherit => 0,
@@ -159,6 +165,7 @@ impl Command {
                     ),
                 });
 
+                child_ends.push(read_fd);
                 read_fd
             }
             Stdio::ParentStdout => 1,
@@ -179,6 +186,7 @@ impl Command {
                     ),
                 });
 
+                child_ends.push(write_fd);
                 write_fd
             }
             Stdio::ParentStdout => 1,
@@ -199,6 +207,7 @@ impl Command {
                     ),
                 });
 
+                child_ends.push(write_fd);
                 write_fd
             }
             Stdio::ParentStdout => 1,
@@ -206,7 +215,7 @@ impl Command {
             Stdio::InheritFile(file) => file.0.inner.raw_fd(),
         };
 
-        let result = cvt_io(cvt(unsafe {
+        let spawned = cvt_io(cvt(unsafe {
             edos_rt::sys_spawn(
                 program.as_ptr().cast(),
                 argv_ptr.cast_mut().cast(),
@@ -214,7 +223,15 @@ impl Command {
                 stdout,
                 stderr,
             )
-        } as isize))?;
+        } as isize));
+
+        // After the spawn, so the kernel has copied them into the child, and on
+        // the failure path too rather than leaking them.
+        for fd in child_ends {
+            edos_rt::fd::sys_close(fd);
+        }
+
+        let result = spawned?;
         Ok((
             Process(result as u64),
             StdioPipes { stderr: pipes[2].take(), stdout: pipes[1].take(), stdin: pipes[0].take() },
@@ -236,18 +253,21 @@ pub fn read_output(
     use edos_rt::fd::{PollFd, PollState, poll};
 
     let readable = PollState { readable: true, ..PollState::default() };
-    let mut fds = [
-        PollFd { fd: out.inner.raw_fd(), interests: readable, result: PollState::default() },
-        PollFd { fd: err.inner.raw_fd(), interests: readable, result: PollState::default() },
-    ];
     let mut open = [true, true];
     let mut buf = [0u8; 1024];
 
     while open[0] || open[1] {
-        for (i, fd) in fds.iter_mut().enumerate() {
-            fd.result = PollState::default();
-            if !open[i] {
-                fd.interests = PollState::default();
+        // Only the pipes still open go into the set. Hang-up is reported
+        // whether or not it was asked for, so leaving a drained pipe in would
+        // make every poll return at once and turn this into a spin.
+        let mut fds = Vec::with_capacity(2);
+        for (i, pipe) in [&out, &err].into_iter().enumerate() {
+            if open[i] {
+                fds.push(PollFd {
+                    fd: pipe.inner.raw_fd(),
+                    interests: readable,
+                    result: PollState::default(),
+                });
             }
         }
 
@@ -255,8 +275,14 @@ pub fn read_output(
             return Err(io::Error::last_os_error());
         }
 
+        let mut slot = 0;
         for i in 0..2 {
-            if !open[i] || !(fds[i].result.readable || fds[i].result.hangup) {
+            if !open[i] {
+                continue;
+            }
+            let ready = fds[slot].result;
+            slot += 1;
+            if !(ready.readable || ready.hangup || ready.error) {
                 continue;
             }
             let pipe = if i == 0 { &out } else { &err };
