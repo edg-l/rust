@@ -1,18 +1,21 @@
 use edos_rt::allocator::PoolAllocator;
 
-use crate::alloc::{GlobalAlloc, Layout, System};
+use crate::alloc::{GlobalAlloc, Layout};
 
 static EDOS_ALLOC: PoolAllocator = PoolAllocator::new();
 
-#[stable(feature = "alloc_system_type", since = "1.28.0")]
-unsafe impl GlobalAlloc for System {
-    #[inline]
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        unsafe { EDOS_ALLOC.alloc(layout) }
-    }
+#[inline]
+pub unsafe fn alloc(layout: Layout) -> *mut u8 {
+    unsafe { EDOS_ALLOC.alloc(layout) }
+}
 
-    #[inline]
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { EDOS_ALLOC.dealloc(ptr, layout) };
-    }
+#[inline]
+pub unsafe fn dealloc(ptr: *mut u8, layout: Layout) {
+    unsafe { EDOS_ALLOC.dealloc(ptr, layout) }
+}
+
+#[inline]
+pub unsafe fn realloc(ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+    // SAFETY: this is just a `pub` wrapper.
+    unsafe { super::realloc_fallback(ptr, layout, new_size) }
 }

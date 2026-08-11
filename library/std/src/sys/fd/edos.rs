@@ -19,7 +19,11 @@ const fn max_iov() -> usize {
 /// that has more buffers than the kernel takes at once gets the rest on its
 /// next call.
 fn iovecs<'a>(bufs: impl Iterator<Item = (*const u8, usize)>) -> Vec<IoVec> {
-    bufs.take(max_iov()).map(|(base, len)| IoVec { base: base as u64, len: len as u64 }).collect()
+    // The kernel reads and writes through these pointers, so the provenance has
+    // to be exposed rather than stripped with `addr`.
+    bufs.take(max_iov())
+        .map(|(base, len)| IoVec { base: base.expose_provenance() as u64, len: len as u64 })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -33,14 +37,14 @@ impl FileDesc {
         Ok(result as usize)
     }
 
-    pub fn read_buf(&self, mut buf: BorrowedCursor<'_>) -> io::Result<()> {
+    pub fn read_buf(&self, mut buf: BorrowedCursor<'_, u8>) -> io::Result<()> {
         // SAFETY: The `read` syscall does not read from the buffer, so it is
         // safe to use `&mut [MaybeUninit<u8>]`.
         let result = cvt(unsafe {
             sys_read(self.inner.raw_fd(), buf.as_mut().as_mut_ptr() as *mut u8, buf.capacity())
         })?;
         // SAFETY: Exactly `result` bytes have been filled.
-        unsafe { buf.advance_unchecked(result as usize) };
+        unsafe { buf.advance(result as usize) };
         Ok(())
     }
 

@@ -14,11 +14,10 @@ use crate::io::{self, BorrowedCursor, Error, IoSlice, IoSliceMut, SeekFrom};
 use crate::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use crate::path::{Path, PathBuf};
 use crate::sys::fd::FileDesc;
+pub use crate::sys::fs::common::Dir;
 use crate::sys::time::{SystemTime, UNIX_EPOCH};
 use crate::sys::{cvt, cvt_io, unsupported};
 use crate::time::Duration;
-
-pub use crate::sys::fs::common::Dir;
 
 pub struct File(pub(crate) FileDesc);
 
@@ -346,7 +345,7 @@ impl File {
     }
 
     #[inline]
-    pub fn read_buf(&self, buf: BorrowedCursor<'_>) -> io::Result<()> {
+    pub fn read_buf(&self, buf: BorrowedCursor<'_, u8>) -> io::Result<()> {
         self.0.read_buf(buf)
     }
 
@@ -434,6 +433,12 @@ pub fn rename(old: &Path, new: &Path) -> io::Result<()> {
 }
 
 pub fn set_perm(_p: &Path, perm: FilePermissions) -> io::Result<()> {
+    match perm.0 {
+        _ => Ok(()),
+    }
+}
+
+pub fn set_perm_nofollow(_p: &Path, perm: FilePermissions) -> io::Result<()> {
     match perm.0 {
         _ => Ok(()),
     }

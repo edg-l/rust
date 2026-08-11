@@ -1,10 +1,11 @@
-//! Unix-specific extensions to primitives in the [`std::ffi`] module.
+//! EDOS-specific extensions to primitives in the [`std::ffi`] module.
 //!
 //! # Examples
 //!
-//! ```
+#![cfg_attr(target_os = "edos", doc = "```")]
+#![cfg_attr(not(target_os = "edos"), doc = "```ignore (needs edos)")]
 //! use std::ffi::OsString;
-//! use std::os::unix::ffi::OsStringExt;
+//! use std::os::edos::ffi::OsStringExt;
 //!
 //! let bytes = b"foo".to_vec();
 //!
@@ -17,9 +18,10 @@
 //! assert_eq!(bytes, b"foo");
 //! ```
 //!
-//! ```
+#![cfg_attr(target_os = "edos", doc = "```")]
+#![cfg_attr(not(target_os = "edos"), doc = "```ignore (needs edos)")]
 //! use std::ffi::OsStr;
-//! use std::os::unix::ffi::OsStrExt;
+//! use std::os::edos::ffi::OsStrExt;
 //!
 //! let bytes = b"foo";
 //!
@@ -36,6 +38,7 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
+#[path = "../unix/ffi/os_str.rs"]
 mod os_str;
 
 #[stable(feature = "rust1", since = "1.0.0")]

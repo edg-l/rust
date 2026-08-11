@@ -81,6 +81,10 @@ cfg_select! {
         mod hermit;
         use hermit as imp;
     }
+    target_os = "edos" => {
+        mod edos;
+        use edos as imp;
+    }
     target_os = "motor" => {
         mod motor;
         use motor as imp;
@@ -123,6 +127,7 @@ cfg_select! {
         target_os = "solid_asp3",
         target_os = "uefi",
         target_os = "zkvm",
+        target_os = "edos",
     ) => {
         #[inline]
         pub unsafe fn alloc_zeroed(layout: Layout) -> *mut u8 {
@@ -135,8 +140,5 @@ cfg_select! {
     }
     _ => {
         pub use imp::alloc_zeroed;
-    }
-    target_os = "edos" => {
-        mod edos;
     }
 }

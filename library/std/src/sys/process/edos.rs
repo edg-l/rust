@@ -1,7 +1,7 @@
 use alloc_crate::ffi::CString;
 use edos_rt::io::cvt;
 
-use super::env::{CommandEnv, CommandEnvs};
+use super::env::{CommandEnv, CommandEnvs, CommandResolvedEnvs};
 use crate::env::current_dir;
 pub use crate::ffi::OsString as EnvKey;
 use crate::ffi::{OsStr, OsString};
@@ -94,6 +94,10 @@ impl Command {
 
     pub fn get_env_clear(&self) -> bool {
         self.env.does_clear()
+    }
+
+    pub fn get_resolved_envs(&self) -> CommandResolvedEnvs {
+        CommandResolvedEnvs::new(self.env.capture())
     }
 
     pub fn get_current_dir(&self) -> Option<&Path> {
@@ -426,4 +430,3 @@ impl<'a> fmt::Debug for CommandArgs<'a> {
         f.debug_list().entries(self.iter.clone()).finish()
     }
 }
-

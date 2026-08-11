@@ -1,6 +1,5 @@
 use crate::spec::{
-    Cc, LinkerFlavor, Lld, Os, PanicStrategy, RelocModel, RelroLevel, StackProbeType,
-    TargetOptions,
+    Cc, LinkerFlavor, Lld, Os, PanicStrategy, RelocModel, RelroLevel, StackProbeType, TargetOptions,
 };
 
 pub(crate) fn opts() -> TargetOptions {

@@ -2,11 +2,9 @@
 
 use crate::fs::File;
 use crate::io;
-use crate::sys::cvt_io;
-use crate::sys::AsInner;
-
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use crate::os::fd::*;
+use crate::sys::{AsInner, cvt_io};
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait FileExt {

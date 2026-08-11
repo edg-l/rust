@@ -8,13 +8,12 @@ use edos_rt::net::{
     SO_SNDTIMEO, SOL_SOCKET, SockAddrIn, TCP_NODELAY,
 };
 
-use crate::fmt;
 use crate::io::{self, BorrowedCursor, IoSlice, IoSliceMut};
 use crate::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, SocketAddrV4, ToSocketAddrs};
 use crate::sys::net::connection::each_addr;
 use crate::sys::{error_kind, unsupported};
 use crate::time::Duration;
-use crate::vec;
+use crate::{fmt, vec};
 
 /// `struct timeval`, the layout the kernel reads for the timeout options.
 #[repr(C)]
@@ -236,13 +235,13 @@ impl TcpStream {
         self.0.read(buf)
     }
 
-    pub fn read_buf(&self, mut cursor: BorrowedCursor<'_>) -> io::Result<()> {
+    pub fn read_buf(&self, mut cursor: BorrowedCursor<'_, u8>) -> io::Result<()> {
         // SAFETY: `read` only writes to the buffer, and is told exactly how
-        // many bytes it may write; `advance_unchecked` is then given the count
+        // many bytes it may write; `advance` is then given the count
         // it reported, so only initialised bytes are ever exposed.
         unsafe {
             let n = self.0.read(cursor.as_mut().assume_init_mut())?;
-            cursor.advance_unchecked(n);
+            cursor.advance(n);
         }
         Ok(())
     }
@@ -305,6 +304,14 @@ impl TcpStream {
     pub fn linger(&self) -> io::Result<Option<Duration>> {
         let l: Linger = self.0.getsockopt(SOL_SOCKET, SO_LINGER)?;
         Ok((l.onoff != 0).then(|| Duration::from_secs(l.linger as u64)))
+    }
+
+    pub fn set_keepalive(&self, _keepalive: bool) -> io::Result<()> {
+        unsupported()
+    }
+
+    pub fn keepalive(&self) -> io::Result<bool> {
+        unsupported()
     }
 
     pub fn set_nodelay(&self, nodelay: bool) -> io::Result<()> {
