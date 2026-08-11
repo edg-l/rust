@@ -476,7 +476,8 @@ pub fn stat(p: &Path) -> io::Result<FileAttr> {
 }
 
 pub fn lstat(p: &Path) -> io::Result<FileAttr> {
-    stat(p)
+    let attr = cvt_io(edos_rt::fd::lstat_path(&p.to_string_lossy()))?;
+    Ok(FileAttr(attr))
 }
 
 pub fn canonicalize(p: &Path) -> io::Result<PathBuf> {
