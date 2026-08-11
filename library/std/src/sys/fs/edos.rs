@@ -83,8 +83,13 @@ pub struct FileTimes {
     modified: Option<SystemTime>,
 }
 
+/// The attribute word `stat` reports, of which only the read-only bit has a
+/// meaning std can express.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FilePermissions(u16);
+
+/// `FstatEntry::attrs` bit 0.
+const ATTR_READONLY: u16 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub struct FileType(edos_rt::fs::FileType);
@@ -98,7 +103,7 @@ impl FileAttr {
     }
 
     pub fn perm(&self) -> FilePermissions {
-        FilePermissions(0)
+        FilePermissions(self.0.attrs)
     }
 
     pub fn file_type(&self) -> FileType {
@@ -120,10 +125,16 @@ impl FileAttr {
 
 impl FilePermissions {
     pub fn readonly(&self) -> bool {
-        false
+        self.0 & ATTR_READONLY != 0
     }
 
-    pub fn set_readonly(&mut self, _readonly: bool) {}
+    pub fn set_readonly(&mut self, readonly: bool) {
+        if readonly {
+            self.0 |= ATTR_READONLY;
+        } else {
+            self.0 &= !ATTR_READONLY;
+        }
+    }
 }
 
 impl Eq for FilePermissions {}
@@ -383,6 +394,7 @@ impl File {
         Ok(File(self.0.try_clone()?))
     }
 
+    /// See [`set_perm`].
     pub fn set_permissions(&self, _perm: FilePermissions) -> io::Result<()> {
         unsupported()
     }
@@ -410,8 +422,8 @@ impl DirBuilder {
 }
 
 impl fmt::Debug for File {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("File").field("fd", &self.0.as_raw_fd()).finish()
     }
 }
 
@@ -432,16 +444,15 @@ pub fn rename(old: &Path, new: &Path) -> io::Result<()> {
     cvt_io(edos_rt::fs::rename(&old.to_string_lossy(), &new.to_string_lossy()))
 }
 
-pub fn set_perm(_p: &Path, perm: FilePermissions) -> io::Result<()> {
-    match perm.0 {
-        _ => Ok(()),
-    }
+/// Nothing writes a file's attributes back: `stat` reports the read-only bit
+/// but no syscall sets it. Reporting success would leave a caller believing a
+/// file it just made read-only is protected.
+pub fn set_perm(_p: &Path, _perm: FilePermissions) -> io::Result<()> {
+    unsupported()
 }
 
-pub fn set_perm_nofollow(_p: &Path, perm: FilePermissions) -> io::Result<()> {
-    match perm.0 {
-        _ => Ok(()),
-    }
+pub fn set_perm_nofollow(_p: &Path, _perm: FilePermissions) -> io::Result<()> {
+    unsupported()
 }
 
 pub fn rmdir(p: &Path) -> io::Result<()> {
@@ -522,6 +533,8 @@ pub fn set_times(p: &Path, times: FileTimes) -> io::Result<()> {
     cvt_io(edos_rt::fs::set_times(&p.to_string_lossy(), accessed, modified))
 }
 
+/// `utimensat` resolves through symbolic links and refuses
+/// `AT_SYMLINK_NOFOLLOW` rather than ignoring it, so there is nothing to call.
 pub fn set_times_nofollow(_p: &Path, _times: FileTimes) -> io::Result<()> {
     unsupported()
 }

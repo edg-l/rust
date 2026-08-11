@@ -43,8 +43,20 @@ extern "C" fn thread_start(main: *mut u8) -> i32 {
     }
 }
 
+/// The number of CPUs that came up, from `/proc/cpuinfo`.
+///
+/// The kernel reports both what it found in the ACPI tables and how many of
+/// those actually started; the online count is the one a thread pool wants,
+/// since an AP that failed to boot will run nothing.
 pub fn available_parallelism() -> io::Result<NonZero<usize>> {
-    Err(io::Error::UNKNOWN_THREAD_COUNT)
+    let info = crate::fs::read_to_string("/proc/cpuinfo")?;
+    let online = info
+        .lines()
+        .find_map(|line| line.strip_prefix("cpus online:"))
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .and_then(NonZero::new);
+
+    online.ok_or(io::Error::UNKNOWN_THREAD_COUNT)
 }
 
 pub fn current_os_id() -> Option<u64> {
@@ -52,7 +64,7 @@ pub fn current_os_id() -> Option<u64> {
 }
 
 pub fn yield_now() {
-    // do nothing
+    edos_rt::process::sched_yield();
 }
 
 pub fn sleep(dur: Duration) {

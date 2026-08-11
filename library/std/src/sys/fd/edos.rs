@@ -104,7 +104,7 @@ impl FileDesc {
     }
 
     pub fn set_cloexec(&self) -> io::Result<()> {
-        unsupported()
+        cvt_io(edos_rt::fd::set_cloexec(self.inner.raw_fd(), true))
     }
 
     pub fn set_nonblocking(&self, _nonblocking: bool) -> io::Result<()> {

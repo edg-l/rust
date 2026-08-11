@@ -9,11 +9,26 @@ use crate::num::NonZero;
 use crate::path::Path;
 use crate::process::StdioPipes;
 use crate::sys::fd::FileDesc;
-use crate::sys::fs::File;
-use crate::sys::{cvt_io, error_kind, unsupported};
+use crate::sys::fs::{File, OpenOptions};
+use crate::sys::{cvt_io, error_kind};
 use crate::{fmt, io};
 
 pub type ChildPipe = crate::sys::pipe::Pipe;
+
+/// Open `/dev/null` for one of a child's three descriptors.
+///
+/// The `File` is parked in `open` because the spawn takes descriptor numbers:
+/// dropping it before the child is running would close the descriptor the
+/// kernel is about to hand over.
+fn open_null(open: &mut Vec<File>) -> io::Result<u64> {
+    let mut opts = OpenOptions::new();
+    opts.read(true);
+    opts.write(true);
+    let file = File::open(Path::new("/dev/null"), &opts)?;
+    let fd = file.0.inner.raw_fd();
+    open.push(file);
+    Ok(fd)
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // Command
@@ -129,10 +144,11 @@ impl Command {
         let argv_ptr = if argv_ptrs.is_empty() { core::ptr::null() } else { argv_ptrs.as_ptr() };
 
         let mut pipes = [const { None }; 3];
+        let mut null_files = Vec::new();
 
         let stdin = match self.stdin.as_ref().unwrap_or(&default) {
             Stdio::Inherit => 0,
-            Stdio::Null => unsupported()?,
+            Stdio::Null => open_null(&mut null_files)?,
             Stdio::MakePipe => {
                 let (read_fd, write_fd) = edos_rt::process::pipe().unwrap();
 
@@ -152,7 +168,7 @@ impl Command {
 
         let stdout = match self.stdout.as_ref().unwrap_or(&default) {
             Stdio::Inherit => 1,
-            Stdio::Null => unsupported()?,
+            Stdio::Null => open_null(&mut null_files)?,
             Stdio::MakePipe => {
                 let (read_fd, write_fd) = edos_rt::process::pipe().unwrap();
 
@@ -172,7 +188,7 @@ impl Command {
 
         let stderr = match self.stderr.as_ref().unwrap_or(&default) {
             Stdio::Inherit => 2,
-            Stdio::Null => unsupported()?,
+            Stdio::Null => open_null(&mut null_files)?,
             Stdio::MakePipe => {
                 let (read_fd, write_fd) = edos_rt::process::pipe().unwrap();
 
@@ -206,17 +222,53 @@ impl Command {
     }
 }
 
-pub fn output(_cmd: &mut Command) -> io::Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
-    unsupported()
-}
-
+/// Drain a child's stdout and stderr together.
+///
+/// Reading one to the end before starting the other deadlocks as soon as the
+/// child fills the pipe nobody is draining, so both are polled and whichever
+/// has bytes is read.
 pub fn read_output(
-    _out: ChildPipe,
-    _stdout: &mut Vec<u8>,
-    _err: ChildPipe,
-    _stderr: &mut Vec<u8>,
+    out: ChildPipe,
+    stdout: &mut Vec<u8>,
+    err: ChildPipe,
+    stderr: &mut Vec<u8>,
 ) -> io::Result<()> {
-    unsupported()
+    use edos_rt::fd::{PollFd, PollState, poll};
+
+    let readable = PollState { readable: true, ..PollState::default() };
+    let mut fds = [
+        PollFd { fd: out.inner.raw_fd(), interests: readable, result: PollState::default() },
+        PollFd { fd: err.inner.raw_fd(), interests: readable, result: PollState::default() },
+    ];
+    let mut open = [true, true];
+    let mut buf = [0u8; 1024];
+
+    while open[0] || open[1] {
+        for (i, fd) in fds.iter_mut().enumerate() {
+            fd.result = PollState::default();
+            if !open[i] {
+                fd.interests = PollState::default();
+            }
+        }
+
+        if poll(&mut fds, u64::MAX) == u64::MAX {
+            return Err(io::Error::last_os_error());
+        }
+
+        for i in 0..2 {
+            if !open[i] || !(fds[i].result.readable || fds[i].result.hangup) {
+                continue;
+            }
+            let pipe = if i == 0 { &out } else { &err };
+            let sink = if i == 0 { &mut *stdout } else { &mut *stderr };
+            match pipe.read(&mut buf)? {
+                0 => open[i] = false,
+                n => sink.extend_from_slice(&buf[..n]),
+            }
+        }
+    }
+
+    Ok(())
 }
 
 pub fn getpid() -> u32 {
@@ -372,7 +424,10 @@ impl Process {
     }
 
     pub fn kill(&mut self) -> io::Result<()> {
-        unsupported()
+        if edos_rt::process::sys_kill(self.0, edos_rt::sys::SIGKILL) < 0 {
+            return Err(error_kind(edos_rt::sys::errno()).into());
+        }
+        Ok(())
     }
 
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
