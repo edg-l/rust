@@ -703,6 +703,9 @@
 //@ revisions: x86_64_unknown_dragonfly
 //@ [x86_64_unknown_dragonfly] compile-flags: --target x86_64-unknown-dragonfly
 //@ [x86_64_unknown_dragonfly] needs-llvm-components: x86
+//@ revisions: x86_64_unknown_edos
+//@ [x86_64_unknown_edos] compile-flags: --target x86_64-unknown-edos
+//@ [x86_64_unknown_edos] needs-llvm-components: x86
 //@ revisions: x86_64_unknown_freebsd
 //@ [x86_64_unknown_freebsd] compile-flags: --target x86_64-unknown-freebsd
 //@ [x86_64_unknown_freebsd] needs-llvm-components: x86
@@ -751,9 +754,6 @@
 //@ revisions: x86_64_unknown_linux_none
 //@ [x86_64_unknown_linux_none] compile-flags: --target x86_64-unknown-linux-none
 //@ [x86_64_unknown_linux_none] needs-llvm-components: x86
-//@ revisions: x86_64_unknown_linux_edos
-//@ [x86_64_unknown_linux_edos] compile-flags: --target x86_64-unknown-linux-edos
-//@ [x86_64_unknown_linux_edos] needs-llvm-components: x86
 //@ revisions: x86_64_unknown_managarm_mlibc
 //@ [x86_64_unknown_managarm_mlibc] compile-flags: --target x86_64-unknown-managarm-mlibc
 //@ [x86_64_unknown_managarm_mlibc] needs-llvm-components: x86
