@@ -130,7 +130,10 @@ impl Command {
         let mut argv_storage: Vec<Vec<u8>> = Vec::with_capacity(args.len());
         let mut argv_ptrs: Vec<*const u8> = Vec::with_capacity(args.len() + 1);
 
-        for arg in args.iter() {
+        // Skipping the program name: the kernel prepends the path it resolved
+        // as argv[0], so passing ours as well gave every child a duplicate and
+        // shifted its real arguments one place along.
+        for arg in args.iter().skip(1) {
             let mut buf = Vec::with_capacity(arg.len() + 1);
             buf.extend_from_slice(arg.as_encoded_bytes());
             buf.push(0);
