@@ -51,7 +51,15 @@ pub fn error_kind(errno: Errno) -> ErrorKind {
         Errno::EAFNOSUPPORT => ErrorKind::Unsupported,
         Errno::ESPIPE => ErrorKind::NotSeekable,
         Errno::EBUSY => ErrorKind::ResourceBusy,
-        Errno::EFAULT | Errno::Clear | Errno::UNKNOWN => ErrorKind::Uncategorized,
+        Errno::ELOOP => ErrorKind::FilesystemLoop,
+        Errno::EINPROGRESS | Errno::EALREADY => ErrorKind::InProgress,
+        // ENXIO is a named pipe opened for writing with no reader, and EISCONN
+        // a `connect` on a socket that already has one. No `ErrorKind` names
+        // either, and the unix mapping leaves them uncategorised too, so a
+        // caller that needs to tell them apart reads the raw code.
+        Errno::ENXIO | Errno::EISCONN | Errno::EFAULT | Errno::Clear | Errno::UNKNOWN => {
+            ErrorKind::Uncategorized
+        }
     }
 }
 

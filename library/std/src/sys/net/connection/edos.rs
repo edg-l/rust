@@ -3,6 +3,7 @@
 //! The kernel speaks IPv4 only, so every entry point that takes a
 //! [`SocketAddr`] rejects a v6 one rather than silently truncating it.
 
+use edos_rt::fd::{PollFd, PollState};
 use edos_rt::net::{
     self as rt, DnsError, IP_TTL, IPPROTO_IP, IPPROTO_TCP, SO_ERROR, SO_LINGER, SO_RCVTIMEO,
     SO_SNDTIMEO, SOL_SOCKET, SockAddrIn, TCP_NODELAY,
@@ -177,6 +178,12 @@ impl Socket {
         Ok((code != 0).then(|| io::Error::from_raw_os_error(code)))
     }
 
+    /// `O_NONBLOCK` on the descriptor, which the kernel honours in `read`,
+    /// `recvfrom` and `accept`.
+    fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        edos_rt::fd::set_nonblocking(self.0, nonblocking).map_err(|_| last_error())
+    }
+
     fn set_ttl(&self, ttl: u32) -> io::Result<()> {
         self.setsockopt(IPPROTO_IP, IP_TTL, ttl as i32)
     }
@@ -204,10 +211,63 @@ impl TcpStream {
         })
     }
 
-    /// The kernel's connect blocks for its own bounded wait, and there is no
-    /// non-blocking connect to drive a deadline from.
-    pub fn connect_timeout(_: &SocketAddr, _: Duration) -> io::Result<TcpStream> {
-        unsupported()
+    /// Connect within `timeout`, which the blocking path cannot honour: the
+    /// kernel's `connect` waits its own bounded wait and takes no deadline.
+    ///
+    /// The POSIX shape (connect(3p)): `O_NONBLOCK` makes the handshake report
+    /// `EINPROGRESS`, `poll` reports the descriptor writable exactly when it
+    /// resolves, whichever way it went, and `SO_ERROR` says which.
+    pub fn connect_timeout(addr: &SocketAddr, timeout: Duration) -> io::Result<TcpStream> {
+        if timeout == Duration::ZERO {
+            return Err(io::const_error!(
+                io::ErrorKind::InvalidInput,
+                "cannot set a 0 duration timeout"
+            ));
+        }
+
+        let sock = Socket::new(rt::SOCK_STREAM)?;
+        let sockaddr = to_sockaddr(addr)?;
+        sock.set_nonblocking(true)?;
+
+        match cvt(rt::sys_connect(sock.raw(), &sockaddr)) {
+            // Loopback resolves the handshake inside the call, so there can be
+            // nothing left to wait for.
+            Ok(_) => {
+                sock.set_nonblocking(false)?;
+                return Ok(TcpStream(sock));
+            }
+            Err(e) if e.kind() != io::ErrorKind::InProgress => return Err(e),
+            Err(_) => {}
+        }
+
+        // `u64::MAX` is the kernel's unbounded wait and 0 is its don't-wait, so
+        // a duration is clamped into what is left rather than folded onto
+        // either: a timeout of half a millisecond is a short wait, not none,
+        // and one longer than the kernel can count is a long wait, not forever.
+        let ms = (timeout.as_millis() as u64).clamp(1, u64::MAX - 1);
+        let mut fds = [PollFd {
+            fd: sock.raw(),
+            interests: PollState { writable: true, ..PollState::default() },
+            result: PollState::default(),
+        }];
+        match edos_rt::fd::poll(&mut fds, ms) {
+            u64::MAX => return Err(last_error()),
+            0 => {
+                return Err(io::const_error!(
+                    io::ErrorKind::TimedOut,
+                    "connection timed out"
+                ));
+            }
+            _ => {}
+        }
+
+        let code: i32 = sock.getsockopt(SOL_SOCKET, SO_ERROR)?;
+        if code != 0 {
+            return Err(err(edos_rt::sys::Errno::from_raw(code as u64)));
+        }
+
+        sock.set_nonblocking(false)?;
+        Ok(TcpStream(sock))
     }
 
     pub fn set_read_timeout(&self, t: Option<Duration>) -> io::Result<()> {
@@ -335,9 +395,8 @@ impl TcpStream {
         self.0.take_error()
     }
 
-    /// The kernel has no `O_NONBLOCK`; every socket call blocks.
-    pub fn set_nonblocking(&self, _: bool) -> io::Result<()> {
-        unsupported()
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        self.0.set_nonblocking(nonblocking)
     }
 }
 
@@ -401,8 +460,8 @@ impl TcpListener {
         self.0.take_error()
     }
 
-    pub fn set_nonblocking(&self, _: bool) -> io::Result<()> {
-        unsupported()
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        self.0.set_nonblocking(nonblocking)
     }
 }
 
@@ -531,8 +590,8 @@ impl UdpSocket {
         self.0.take_error()
     }
 
-    pub fn set_nonblocking(&self, _: bool) -> io::Result<()> {
-        unsupported()
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        self.0.set_nonblocking(nonblocking)
     }
 
     pub fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
