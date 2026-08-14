@@ -1,5 +1,5 @@
 use edos_rt::io::IoResult;
-use edos_rt::sys::{Errno, errno};
+use edos_rt::sys::Errno;
 
 use crate::io::{self as std_io, ErrorKind};
 
@@ -53,13 +53,34 @@ pub fn error_kind(errno: Errno) -> ErrorKind {
         Errno::EBUSY => ErrorKind::ResourceBusy,
         Errno::ELOOP => ErrorKind::FilesystemLoop,
         Errno::EINPROGRESS | Errno::EALREADY => ErrorKind::InProgress,
+        Errno::ENOSYS | Errno::EOPNOTSUPP => ErrorKind::Unsupported,
+        Errno::ETIMEDOUT => ErrorKind::TimedOut,
+        Errno::ECONNRESET => ErrorKind::ConnectionReset,
+        Errno::ECONNABORTED => ErrorKind::ConnectionAborted,
+        Errno::EHOSTUNREACH => ErrorKind::HostUnreachable,
+        Errno::ENETUNREACH => ErrorKind::NetworkUnreachable,
+        Errno::EADDRNOTAVAIL => ErrorKind::AddrNotAvailable,
+        Errno::ENOTEMPTY => ErrorKind::DirectoryNotEmpty,
+        Errno::EXDEV => ErrorKind::CrossesDevices,
+        Errno::EMLINK => ErrorKind::TooManyLinks,
+        Errno::ENAMETOOLONG => ErrorKind::InvalidFilename,
+        Errno::EFBIG | Errno::E2BIG => ErrorKind::FileTooLarge,
+        Errno::ESRCH | Errno::ECHILD => ErrorKind::NotFound,
+        Errno::EDOM | Errno::ERANGE | Errno::EOVERFLOW => ErrorKind::InvalidInput,
+        Errno::ENOTSOCK | Errno::ENOTTY => ErrorKind::InvalidInput,
+        Errno::EMSGSIZE => ErrorKind::InvalidInput,
+        Errno::ENFILE | Errno::EMFILE | Errno::ENOBUFS => ErrorKind::QuotaExceeded,
         // ENXIO is a named pipe opened for writing with no reader, and EISCONN
         // a `connect` on a socket that already has one. No `ErrorKind` names
         // either, and the unix mapping leaves them uncategorised too, so a
-        // caller that needs to tell them apart reads the raw code.
-        Errno::ENXIO | Errno::EISCONN | Errno::EFAULT | Errno::Clear | Errno::UNKNOWN => {
-            ErrorKind::Uncategorized
-        }
+        // caller that needs to tell them apart reads the raw code. ENODEV joins
+        // them: it names a device that is absent rather than a path that is.
+        Errno::ENXIO
+        | Errno::EISCONN
+        | Errno::EFAULT
+        | Errno::ENODEV
+        | Errno::Clear
+        | Errno::UNKNOWN => ErrorKind::Uncategorized,
     }
 }
 
@@ -67,11 +88,18 @@ pub fn abort_internal() -> ! {
     edos_rt::process::sys_exit(1)
 }
 
+/// Splits a raw syscall return into a result and an [`std_io::Error`].
+///
+/// A failure is any return in the `[-4095, -1]` window, not only `-1`: the
+/// kernel puts the code itself in the return register, so testing the legacy
+/// sentinel alone lets every other code through as a valid result — a count, a
+/// length, or an address the caller then uses. Reading the code from the return
+/// also avoids the `SYS_ERRNO` round trip, which a signal handler could race.
 pub fn cvt(t: isize) -> Result<isize, std_io::Error> {
-    if t == -1 {
-        return Err(error_kind(errno()).into());
+    match edos_rt::sys::sys_result(t as u64) {
+        Ok(_) => Ok(t),
+        Err(e) => Err(error_kind(e).into()),
     }
-    Ok(t)
 }
 
 pub fn cvt_io<T>(result: IoResult<T>) -> crate::io::Result<T> {

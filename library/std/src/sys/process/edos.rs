@@ -274,7 +274,7 @@ pub fn read_output(
             }
         }
 
-        if poll(&mut fds, u64::MAX) == u64::MAX {
+        if edos_rt::sys::is_err(poll(&mut fds, u64::MAX)) {
             return Err(io::Error::last_os_error());
         }
 

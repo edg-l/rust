@@ -2,7 +2,6 @@ use edos_rt::io::{sys_read, sys_write};
 
 use crate::io::{self};
 use crate::sys::cvt;
-use crate::sys::io::{decode_error_kind, errno};
 
 pub struct Stdin;
 pub struct Stdout;
@@ -19,7 +18,10 @@ impl io::Read for Stdin {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let count = unsafe { sys_read(0, buf.as_mut_ptr(), buf.len()) };
 
-        if count != -1 { Ok(count as usize) } else { Err(decode_error_kind(errno()).into()) }
+        match edos_rt::sys::sys_result(count as u64) {
+            Ok(_) => Ok(count as usize),
+            Err(e) => Err(crate::sys::error_kind(e).into()),
+        }
     }
 
     #[inline]
@@ -45,7 +47,10 @@ impl io::Write for Stdout {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let count = unsafe { sys_write(1, buf.as_ptr(), buf.len()) };
 
-        if count != -1 { Ok(count as usize) } else { Err(decode_error_kind(errno()).into()) }
+        match edos_rt::sys::sys_result(count as u64) {
+            Ok(_) => Ok(count as usize),
+            Err(e) => Err(crate::sys::error_kind(e).into()),
+        }
     }
 
     #[inline]
@@ -65,7 +70,10 @@ impl io::Write for Stderr {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let count = unsafe { sys_write(2, buf.as_ptr(), buf.len()) };
 
-        if count != -1 { Ok(count as usize) } else { Err(decode_error_kind(errno()).into()) }
+        match edos_rt::sys::sys_result(count as u64) {
+            Ok(_) => Ok(count as usize),
+            Err(e) => Err(crate::sys::error_kind(e).into()),
+        }
     }
 
     #[inline]

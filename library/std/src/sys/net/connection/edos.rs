@@ -100,7 +100,7 @@ impl Socket {
 
     fn duplicate(&self) -> io::Result<Socket> {
         let fd = edos_rt::fd::sys_dup(self.0);
-        if fd == u64::MAX { Err(last_error()) } else { Ok(Socket(fd)) }
+        if edos_rt::sys::is_err(fd) { Err(last_error()) } else { Ok(Socket(fd)) }
     }
 
     fn setsockopt<T>(&self, level: i32, name: i32, value: T) -> io::Result<()> {
