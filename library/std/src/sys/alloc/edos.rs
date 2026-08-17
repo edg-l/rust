@@ -14,6 +14,13 @@ pub unsafe fn dealloc(ptr: *mut u8, layout: Layout) {
     unsafe { EDOS_ALLOC.dealloc(ptr, layout) }
 }
 
+/// Hands back what the calling thread parked in the allocator's per-thread
+/// cache, which it holds so that the common allocate-and-free pair takes no
+/// lock. A thread that exits without this strands whatever it was holding.
+pub(crate) fn flush_thread_cache() {
+    EDOS_ALLOC.flush_thread_cache();
+}
+
 #[inline]
 pub unsafe fn realloc(ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
     // The allocator resizes in place where the block already covers the new

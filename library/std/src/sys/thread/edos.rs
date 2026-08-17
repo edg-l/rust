@@ -39,6 +39,11 @@ extern "C" fn thread_start(main: *mut u8) -> i32 {
         crate::sys::thread_local::destructors::run();
         crate::rt::thread_cleanup();
 
+        // Last, because everything above it can still free: the allocator
+        // parks small blocks per thread, and a thread that exits holding them
+        // strands them for the life of the process.
+        crate::sys::alloc::flush_thread_cache();
+
         0
     }
 }

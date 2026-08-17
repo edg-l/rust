@@ -84,6 +84,7 @@ cfg_select! {
     target_os = "edos" => {
         mod edos;
         use edos as imp;
+        pub(crate) use edos::flush_thread_cache;
     }
     target_os = "motor" => {
         mod motor;
