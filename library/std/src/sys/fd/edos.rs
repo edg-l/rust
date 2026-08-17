@@ -139,7 +139,9 @@ impl AsRawFd for FileDesc {
 impl IntoRawFd for FileDesc {
     #[inline]
     fn into_raw_fd(self) -> RawFd {
-        self.inner.raw_fd() as RawFd
+        // Reading the number out and letting `self` fall out of scope would
+        // hand back a descriptor its own drop had just closed.
+        self.inner.into_raw_fd() as RawFd
     }
 }
 
