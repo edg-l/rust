@@ -16,6 +16,8 @@ pub unsafe fn dealloc(ptr: *mut u8, layout: Layout) {
 
 #[inline]
 pub unsafe fn realloc(ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-    // SAFETY: this is just a `pub` wrapper.
-    unsafe { super::realloc_fallback(ptr, layout, new_size) }
+    // The allocator resizes in place where the block already covers the new
+    // size or the block after it is free, which is most of what a growing
+    // buffer asks for; the fallback would copy every time.
+    unsafe { EDOS_ALLOC.realloc(ptr, layout, new_size) }
 }
