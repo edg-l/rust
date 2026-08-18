@@ -35,6 +35,9 @@ pub unsafe extern "C" fn _start() -> ! {
 
 extern "C" fn start_rust(argc: isize, argv: *const *const u8, envp: *const *const u8) -> ! {
     unsafe {
+        // Before anything else, because everything else may allocate and the
+        // allocator's per-thread cache lives in the space this checks for.
+        edos_rt::tcb::verify_or_abort(envp);
         edos_rt::env::init_env(envp);
         crate::sys::args::init(argc, argv);
         let code = main(argc, argv);
